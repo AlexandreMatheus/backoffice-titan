@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Plus, Search, Pencil, Trash2, Loader2, ChevronLeft, ChevronRight, LayoutList, LayoutGrid, ZoomIn } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, Loader2, ChevronLeft, ChevronRight, LayoutList, LayoutGrid } from 'lucide-react';
 import { ExercisePhoto } from '@/components/exercise-photo';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/dialog';
 import { ExerciseForm, type Exercise } from '@/components/exercise-form';
 import { useAuth } from '@/contexts/auth-context';
+import { useIsMobile } from '@/hooks/use-mobile';
 import {
   getShelvesForCategory,
   filterByCategory,
@@ -62,6 +63,7 @@ interface ApiResponse {
 
 export function ExerciseTable() {
   const { accessToken } = useAuth();
+  const isMobile = useIsMobile();
   const [exercises, setExercises] = useState<Exercise[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -106,6 +108,9 @@ export function ExerciseTable() {
   );
 
   const handleRowPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement;
+    if (target.closest('[data-shelf-card-interactive]')) return;
+
     const el = e.currentTarget;
     el.setPointerCapture(e.pointerId);
     shelfScrollRef.current = el;
@@ -161,6 +166,11 @@ export function ExerciseTable() {
   useEffect(() => {
     setPage(0);
   }, [search, executionCategoryFilter]);
+
+  const openEditExercise = useCallback((exercise: Exercise) => {
+    setSelectedExercise(exercise);
+    setDialogMode('edit');
+  }, []);
 
   async function handleDelete(exercise: Exercise) {
     setIsDeleting(true);
@@ -301,11 +311,27 @@ export function ExerciseTable() {
                       className="flex flex-1 min-w-0 cursor-grab select-none gap-4 overflow-x-auto overflow-y-hidden overscroll-x-contain scroll-smooth px-2 py-4 [scrollbar-width:none] active:cursor-grabbing [&::-webkit-scrollbar]:hidden"
                       onPointerDown={handleRowPointerDown}
                     >
-                      {shelfExercises.map((ex) => (
+                      {shelfExercises.map((ex) => {
+                        const exercise = ex as Exercise;
+                        return (
                         <div
                           key={ex.id}
+                          data-shelf-card-interactive
                           className="group flex flex-col shrink-0 w-36 rounded-xl border-2 border-border overflow-hidden bg-card hover:border-orange-500/40 hover:bg-muted/50 transition-all"
                         >
+                          <button
+                            type="button"
+                            data-shelf-card-interactive
+                            className="flex flex-col flex-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-500"
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={() => {
+                              if (shelfHasDragged.current) {
+                                shelfHasDragged.current = false;
+                                return;
+                              }
+                              openEditExercise(exercise);
+                            }}
+                          >
                           {/* Thumbnail */}
                           <div className="relative aspect-square w-full bg-muted/70 overflow-hidden">
                             <ExercisePhoto
@@ -314,57 +340,76 @@ export function ExerciseTable() {
                               fill
                               className="object-cover object-[70%_center]"
                             />
-                            {/* Zoom */}
-                            <button
-                              type="button"
-                              className="absolute bottom-1 left-1 rounded-full bg-black/50 text-white p-1 hover:bg-black/70 opacity-0 group-hover:opacity-100 transition-opacity"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (shelfHasDragged.current) return;
-                                // open photo preview — handled below
-                              }}
-                            >
-                              <ZoomIn className="h-3 w-3" />
-                            </button>
-                            {/* Actions overlay */}
-                            <div className="absolute inset-0 flex items-center justify-center gap-1.5 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none group-hover:pointer-events-auto">
-                              <Button
-                                variant="secondary"
-                                size="icon"
-                                className="h-7 w-7"
-                                onPointerDown={(e) => e.stopPropagation()}
-                                onClick={() => {
-                                  setSelectedExercise(ex as Exercise);
-                                  setDialogMode('edit');
-                                }}
-                              >
-                                <Pencil className="h-3.5 w-3.5" />
-                              </Button>
-                              <Button
-                                variant="destructive"
-                                size="icon"
-                                className="h-7 w-7"
-                                onPointerDown={(e) => e.stopPropagation()}
-                                onClick={() => {
-                                  setDeleteTarget(ex as Exercise);
-                                }}
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </Button>
-                            </div>
-                            {(ex as Exercise).r2_video_url && (
+                            {/* Desktop: hover overlay */}
+                            {!isMobile ? (
+                              <div className="absolute inset-0 flex items-center justify-center gap-1.5 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none group-hover:pointer-events-auto">
+                                <Button
+                                  variant="secondary"
+                                  size="icon"
+                                  className="h-7 w-7"
+                                  onPointerDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openEditExercise(exercise);
+                                  }}
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </Button>
+                                <Button
+                                  variant="destructive"
+                                  size="icon"
+                                  className="h-7 w-7"
+                                  onPointerDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setDeleteTarget(exercise);
+                                  }}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              </div>
+                            ) : null}
+                            {exercise.r2_video_url ? (
                               <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1 py-0.5 text-[10px] text-white pointer-events-none">▶</span>
-                            )}
+                            ) : null}
                           </div>
                           {/* Info */}
                           <div className="p-2.5">
                             <span className="text-xs font-medium line-clamp-2 text-foreground block">{ex.name}</span>
-                            {ex.subnome && (
+                            {ex.subnome ? (
                               <span className="text-[11px] line-clamp-1 text-muted-foreground block">{ex.subnome}</span>
-                            )}
+                            ) : null}
                           </div>
+                          </button>
+                          {/* Mobile: ações sempre visíveis (sem hover) */}
+                          {isMobile ? (
+                            <div className="flex gap-1 border-t border-border p-2">
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                size="sm"
+                                className="h-8 flex-1 text-xs"
+                                onPointerDown={(e) => e.stopPropagation()}
+                                onClick={() => openEditExercise(exercise)}
+                              >
+                                <Pencil className="h-3.5 w-3.5 mr-1" />
+                                Editar
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="destructive"
+                                size="icon"
+                                className="h-8 w-8 shrink-0"
+                                onPointerDown={(e) => e.stopPropagation()}
+                                onClick={() => setDeleteTarget(exercise)}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          ) : null}
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                     <Button
                       type="button"
