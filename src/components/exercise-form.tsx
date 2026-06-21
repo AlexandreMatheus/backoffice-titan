@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useRef, useCallback } from 'react';
-import { Loader2, Upload, X, Image as ImageIcon, Video } from 'lucide-react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { Loader2, Image as ImageIcon, Video } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,7 +10,15 @@ import { DialogFooter } from '@/components/ui/dialog';
 import { Combobox } from '@/components/ui/combobox';
 import { ComboboxSingle } from '@/components/ui/combobox-single';
 import { CustomBodySvg } from '@/components/CustomBodySvg';
+import { ExercisePhoto } from '@/components/exercise-photo';
 import { useAuth } from '@/contexts/auth-context';
+import { useBodySvgScale } from '@/hooks/use-mobile';
+import { useR2Photo } from '@/hooks/use-r2-photo';
+import {
+  PHOTO_INPUT_ACCEPT,
+  VIDEO_INPUT_ACCEPT,
+  validateMediaFile,
+} from '@/lib/media-validation';
 
 export interface Exercise {
   id: string;
@@ -134,19 +142,55 @@ interface ExerciseFormProps {
   exercise?: Exercise | null;
   onSaved: (exercise: Exercise) => void;
   onCancel: () => void;
+  onMediaUpdated?: (patch: Pick<Exercise, 'r2_photo_url' | 'r2_video_url'>) => void;
 }
 
-export function ExerciseForm({ exercise, onSaved, onCancel }: ExerciseFormProps) {
+function MediaVideoPreview({ r2VideoUrl }: { r2VideoUrl: string }) {
+  const { resolvedUrl, loading } = useR2Photo(r2VideoUrl);
+
+  if (loading) {
+    return (
+      <div className="flex h-full w-full items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (!resolvedUrl) {
+    return (
+      <div className="flex h-full w-full items-center justify-center px-4 text-center text-xs text-muted-foreground">
+        Vídeo salvo no R2
+      </div>
+    );
+  }
+
+  return <video src={resolvedUrl} controls className="h-full w-full object-cover" />;
+}
+
+export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: ExerciseFormProps) {
   const { accessToken } = useAuth();
+  const bodySvgScale = useBodySvgScale(0.38);
   const [activeTab, setActiveTab] = useState<'info' | 'media'>('info');
   const [isSaving, setIsSaving] = useState(false);
   const [paintRole, setPaintRole] = useState<PaintRole>('target');
 
   const videoInputRef = useRef<HTMLInputElement>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
-  const [uploadedFiles, setUploadedFiles] = useState<{ video?: File; photo?: File }>({});
+  const [localPreview, setLocalPreview] = useState<{ photo?: string; video?: string }>({});
+  const [mediaUrls, setMediaUrls] = useState({
+    r2_photo_url: exercise?.r2_photo_url ?? null,
+    r2_video_url: exercise?.r2_video_url ?? null,
+  });
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [isUploadingVideo, setIsUploadingVideo] = useState(false);
+
+  useEffect(() => {
+    setMediaUrls({
+      r2_photo_url: exercise?.r2_photo_url ?? null,
+      r2_video_url: exercise?.r2_video_url ?? null,
+    });
+    setLocalPreview({});
+  }, [exercise?.id, exercise?.r2_photo_url, exercise?.r2_video_url]);
 
   const [formData, setFormData] = useState(() => {
     const meta = exercise?.metadata ?? {};
@@ -184,58 +228,89 @@ export function ExerciseForm({ exercise, onSaved, onCancel }: ExerciseFormProps)
     });
   }, []);
 
-  const handlePhotoUpload = async (file: File) => {
-    if (!exercise?.id) {
-      toast.error('Salve o exercício antes de enviar mídia.');
-      return;
-    }
-    setIsUploadingPhoto(true);
-    try {
-      const ext = file.name.split('.').pop() ?? 'jpg';
-      const res = await fetch('/api/r2/signed-url', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({ action: 'upload', exerciseId: exercise.id, kind: 'photo', ext }),
-      });
-      if (!res.ok) throw new Error('Erro ao obter URL de upload');
-      const { uploadUrl } = await res.json();
-      await fetch(uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
-      toast.success('Foto enviada com sucesso!');
-    } catch {
-      toast.error('Erro ao enviar foto');
-    } finally {
-      setIsUploadingPhoto(false);
-    }
+  const uploadMedia = useCallback(
+    async (file: File, kind: 'photo' | 'video') => {
+      if (!exercise?.id) {
+        toast.error('Salve o exercício antes de enviar mídia.');
+        return;
+      }
+
+      const validationError = validateMediaFile(file, kind);
+      if (validationError) {
+        toast.error(validationError);
+        return;
+      }
+
+      const setUploading = kind === 'photo' ? setIsUploadingPhoto : setIsUploadingVideo;
+      const previewKey = kind === 'photo' ? 'photo' : 'video';
+      const previewUrl = URL.createObjectURL(file);
+
+      setUploading(true);
+      setLocalPreview((prev) => ({ ...prev, [previewKey]: previewUrl }));
+
+      try {
+        const body = new FormData();
+        body.append('kind', kind);
+        body.append('file', file);
+
+        const res = await fetch(`/api/exercises/${exercise.id}/media`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body,
+        });
+
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          exercise?: { r2_photo_url?: string | null; r2_video_url?: string | null };
+          storageUrl?: string;
+        };
+
+        if (!res.ok) {
+          throw new Error(data.error ?? 'Erro ao enviar mídia');
+        }
+
+        const field = kind === 'photo' ? 'r2_photo_url' : 'r2_video_url';
+        const storageUrl =
+          data.storageUrl ??
+          data.exercise?.[field] ??
+          null;
+
+        if (!storageUrl) {
+          throw new Error('Upload concluído, mas URL da mídia não retornou');
+        }
+
+        setMediaUrls((prev) => ({ ...prev, [field]: storageUrl }));
+        onMediaUpdated?.({ [field]: storageUrl });
+        toast.success(
+          kind === 'photo' ? 'Foto enviada e salva!' : 'Vídeo enviado e salvo!'
+        );
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Erro ao enviar mídia');
+      } finally {
+        URL.revokeObjectURL(previewUrl);
+        setLocalPreview((prev) => {
+          const next = { ...prev };
+          delete next[previewKey];
+          return next;
+        });
+        setUploading(false);
+      }
+    },
+    [accessToken, exercise?.id, onMediaUpdated]
+  );
+
+  const handlePhotoFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (file) void uploadMedia(file, 'photo');
   };
 
-  const handleVideoUpload = async (file: File) => {
-    if (!exercise?.id) {
-      toast.error('Salve o exercício antes de enviar mídia.');
-      return;
-    }
-    setIsUploadingVideo(true);
-    try {
-      const ext = file.name.split('.').pop() ?? 'mp4';
-      const res = await fetch('/api/r2/signed-url', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({ action: 'upload', exerciseId: exercise.id, kind: 'video', ext }),
-      });
-      if (!res.ok) throw new Error('Erro ao obter URL de upload');
-      const { uploadUrl } = await res.json();
-      await fetch(uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
-      toast.success('Vídeo enviado com sucesso!');
-    } catch {
-      toast.error('Erro ao enviar vídeo');
-    } finally {
-      setIsUploadingVideo(false);
-    }
+  const handleVideoFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (file) void uploadMedia(file, 'video');
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -415,14 +490,14 @@ export function ExerciseForm({ exercise, onSaved, onCancel }: ExerciseFormProps)
                 <h3 className="text-sm font-semibold text-center">Visualização muscular</h3>
 
                 {/* Paint role selector */}
-                <div className="flex gap-2 items-center">
-                  <span className="text-xs text-muted-foreground">Pintar como:</span>
+                <div className="flex flex-wrap items-center justify-center gap-1.5 sm:gap-2">
+                  <span className="w-full text-center text-xs text-muted-foreground sm:w-auto">Pintar como:</span>
                   {paintRoleOptions.map((opt) => (
                     <button
                       key={opt.value}
                       type="button"
                       onClick={() => setPaintRole(opt.value)}
-                      className="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium border transition-all"
+                      className="flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-medium border transition-all sm:gap-1.5 sm:px-2.5 sm:text-xs"
                       style={{
                         borderColor: paintRole === opt.value ? opt.color : 'transparent',
                         background: paintRole === opt.value ? `${opt.color}20` : 'transparent',
@@ -443,7 +518,7 @@ export function ExerciseForm({ exercise, onSaved, onCancel }: ExerciseFormProps)
                 </p>
               </div>
 
-              <div className="flex flex-row gap-2 items-start justify-center w-full overflow-x-auto pb-1">
+              <div className="flex w-full max-w-full flex-col items-center gap-3 sm:flex-row sm:items-start sm:justify-center sm:gap-2">
                 <div className="flex flex-col items-center gap-1">
                   <p className="text-xs text-muted-foreground font-medium">Frente</p>
                   <CustomBodySvg
@@ -451,7 +526,7 @@ export function ExerciseForm({ exercise, onSaved, onCancel }: ExerciseFormProps)
                     synergistMuscles={formData.musculos_sinergistas}
                     stabilizerMuscles={formData.musculos_estabilizadores}
                     side="front"
-                    scale={0.38}
+                    scale={bodySvgScale}
                     targetColor="#EF4444"
                     synergistColor="#FF6F59"
                     stabilizerColor="#FACC15"
@@ -466,7 +541,7 @@ export function ExerciseForm({ exercise, onSaved, onCancel }: ExerciseFormProps)
                     synergistMuscles={formData.musculos_sinergistas}
                     stabilizerMuscles={formData.musculos_estabilizadores}
                     side="back"
-                    scale={0.38}
+                    scale={bodySvgScale}
                     targetColor="#EF4444"
                     synergistColor="#FF6F59"
                     stabilizerColor="#FACC15"
@@ -477,7 +552,7 @@ export function ExerciseForm({ exercise, onSaved, onCancel }: ExerciseFormProps)
               </div>
 
               {/* Legend */}
-              <div className="flex gap-4 text-[10px] text-muted-foreground">
+              <div className="flex flex-wrap justify-center gap-3 text-[10px] text-muted-foreground sm:gap-4">
                 <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-red-500 inline-block" />Alvo</span>
                 <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full inline-block" style={{ background: '#FF6F59' }} />Sinergista</span>
                 <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-yellow-400 inline-block" />Estabilizador</span>
@@ -589,124 +664,136 @@ export function ExerciseForm({ exercise, onSaved, onCancel }: ExerciseFormProps)
 
         {activeTab === 'media' && (
           <div className="max-w-2xl space-y-4">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               {/* Photo */}
               <div className="space-y-2">
                 <h4 className="text-sm font-medium">Foto</h4>
-                <div className="rounded-lg overflow-hidden border border-border h-64 flex items-center justify-center relative group bg-zinc-900">
-                  {uploadedFiles.photo ? (
+                <div className="relative flex h-64 items-center justify-center overflow-hidden rounded-lg border border-border bg-zinc-900">
+                  {isUploadingPhoto && localPreview.photo ? (
                     <>
                       <img
-                        src={URL.createObjectURL(uploadedFiles.photo)}
-                        alt="Foto"
-                        className="w-full h-full object-cover"
+                        src={localPreview.photo}
+                        alt="Enviando foto"
+                        className="h-full w-full object-cover opacity-70"
                       />
-                      <button
-                        type="button"
-                        onClick={() => setUploadedFiles((p) => ({ ...p, photo: undefined }))}
-                        className="absolute top-2 right-2 bg-red-500 hover:bg-red-600 text-white rounded-full p-1.5 opacity-0 group-hover:opacity-100 transition-opacity"
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/40">
+                        <Loader2 className="h-6 w-6 animate-spin text-white" />
+                        <p className="text-xs text-white/90">Enviando foto...</p>
+                      </div>
                     </>
+                  ) : mediaUrls.r2_photo_url ? (
+                    <div className="relative h-full w-full">
+                      <ExercisePhoto
+                        r2PhotoUrl={mediaUrls.r2_photo_url}
+                        name={formData.name || 'Exercício'}
+                        fill
+                        className="object-cover"
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="absolute bottom-2 right-2 h-7 bg-black/70 text-xs text-white hover:bg-black/85"
+                        onClick={() => photoInputRef.current?.click()}
+                        disabled={isUploadingPhoto}
+                      >
+                        Substituir
+                      </Button>
+                    </div>
                   ) : (
                     <button
                       type="button"
                       onClick={() => photoInputRef.current?.click()}
-                      className="w-full h-full flex flex-col items-center justify-center gap-2 border-2 border-dashed border-border hover:border-orange-500/50 hover:bg-zinc-800 transition-all"
-                      disabled={isUploadingPhoto}
+                      className="flex h-full w-full flex-col items-center justify-center gap-2 border-2 border-dashed border-border transition-all hover:border-orange-500/50 hover:bg-zinc-800"
+                      disabled={!exercise?.id || isUploadingPhoto}
                     >
-                      {isUploadingPhoto ? (
-                        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                      ) : (
-                        <>
-                          <ImageIcon className="h-8 w-8 text-muted-foreground" />
-                          <p className="text-sm text-muted-foreground">Clique para enviar foto</p>
-                        </>
-                      )}
+                      <ImageIcon className="h-8 w-8 text-muted-foreground" />
+                      <p className="text-sm text-muted-foreground">
+                        {exercise?.id ? 'Clique para enviar foto' : 'Salve o exercício primeiro'}
+                      </p>
                     </button>
                   )}
                 </div>
-                {uploadedFiles.photo && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={() => uploadedFiles.photo && handlePhotoUpload(uploadedFiles.photo)}
-                    disabled={isUploadingPhoto}
-                    className="w-full"
-                  >
-                    {isUploadingPhoto ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Enviando...</> : <><Upload className="mr-2 h-4 w-4" />Enviar para R2</>}
-                  </Button>
-                )}
               </div>
 
               {/* Video */}
               <div className="space-y-2">
                 <h4 className="text-sm font-medium">Vídeo</h4>
-                <div className="rounded-lg overflow-hidden border border-border h-64 flex items-center justify-center relative group bg-zinc-900">
-                  {uploadedFiles.video ? (
+                <div className="relative flex h-64 items-center justify-center overflow-hidden rounded-lg border border-border bg-zinc-900">
+                  {isUploadingVideo && localPreview.video ? (
                     <>
                       <video
-                        src={URL.createObjectURL(uploadedFiles.video)}
-                        controls
-                        className="w-full h-full object-cover"
+                        src={localPreview.video}
+                        className="h-full w-full object-cover opacity-70"
                       />
-                      <button
-                        type="button"
-                        onClick={() => setUploadedFiles((p) => ({ ...p, video: undefined }))}
-                        className="absolute top-2 right-2 bg-red-500 hover:bg-red-600 text-white rounded-full p-1.5 opacity-0 group-hover:opacity-100 transition-opacity"
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/40">
+                        <Loader2 className="h-6 w-6 animate-spin text-white" />
+                        <p className="text-xs text-white/90">Enviando vídeo...</p>
+                      </div>
                     </>
+                  ) : mediaUrls.r2_video_url ? (
+                    <div className="relative h-full w-full">
+                      <MediaVideoPreview r2VideoUrl={mediaUrls.r2_video_url} />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="absolute bottom-2 right-2 h-7 bg-black/70 text-xs text-white hover:bg-black/85"
+                        onClick={() => videoInputRef.current?.click()}
+                        disabled={isUploadingVideo}
+                      >
+                        Substituir
+                      </Button>
+                    </div>
                   ) : (
                     <button
                       type="button"
                       onClick={() => videoInputRef.current?.click()}
-                      className="w-full h-full flex flex-col items-center justify-center gap-2 border-2 border-dashed border-border hover:border-orange-500/50 hover:bg-zinc-800 transition-all"
-                      disabled={isUploadingVideo}
+                      className="flex h-full w-full flex-col items-center justify-center gap-2 border-2 border-dashed border-border transition-all hover:border-orange-500/50 hover:bg-zinc-800"
+                      disabled={!exercise?.id || isUploadingVideo}
                     >
-                      {isUploadingVideo ? (
-                        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                      ) : (
-                        <>
-                          <Video className="h-8 w-8 text-muted-foreground" />
-                          <p className="text-sm text-muted-foreground">Clique para enviar vídeo</p>
-                        </>
-                      )}
+                      <Video className="h-8 w-8 text-muted-foreground" />
+                      <p className="text-sm text-muted-foreground">
+                        {exercise?.id ? 'Clique para enviar vídeo' : 'Salve o exercício primeiro'}
+                      </p>
                     </button>
                   )}
                 </div>
-                {uploadedFiles.video && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={() => uploadedFiles.video && handleVideoUpload(uploadedFiles.video)}
-                    disabled={isUploadingVideo}
-                    className="w-full"
-                  >
-                    {isUploadingVideo ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Enviando...</> : <><Upload className="mr-2 h-4 w-4" />Enviar para R2</>}
-                  </Button>
-                )}
               </div>
             </div>
 
             {!exercise && (
               <p className="text-xs text-muted-foreground">
-                Salve o exercício primeiro para poder enviar fotos e vídeos.
+                Salve o exercício na aba Informações antes de enviar fotos e vídeos.
               </p>
             )}
 
-            <input ref={photoInputRef} type="file" accept="image/*" className="hidden"
-              onChange={(e) => { const f = e.target.files?.[0]; if (f) setUploadedFiles((p) => ({ ...p, photo: f })); }} />
-            <input ref={videoInputRef} type="file" accept="video/*" className="hidden"
-              onChange={(e) => { const f = e.target.files?.[0]; if (f) setUploadedFiles((p) => ({ ...p, video: f })); }} />
+            {exercise && (mediaUrls.r2_photo_url || mediaUrls.r2_video_url) ? (
+              <p className="text-xs text-muted-foreground">
+                Use &quot;Substituir&quot; para trocar foto ou vídeo já enviados.
+              </p>
+            ) : null}
+
+            <input
+              ref={photoInputRef}
+              type="file"
+              accept={PHOTO_INPUT_ACCEPT}
+              className="hidden"
+              onChange={handlePhotoFileSelect}
+            />
+            <input
+              ref={videoInputRef}
+              type="file"
+              accept={VIDEO_INPUT_ACCEPT}
+              className="hidden"
+              onChange={handleVideoFileSelect}
+            />
           </div>
         )}
       </form>
 
       {/* Footer */}
-      <DialogFooter className="px-4 py-3 border-t border-border">
+      <DialogFooter className="flex-shrink-0 px-4 py-3 border-t border-border pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <Button type="button" variant="outline" onClick={onCancel} disabled={isSaving}>
           Cancelar
         </Button>

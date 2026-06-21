@@ -14,11 +14,11 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ExerciseForm, type Exercise } from '@/components/exercise-form';
 import { useAuth } from '@/contexts/auth-context';
 import {
   getShelvesForCategory,
+  filterByCategory,
   SHELF_CATEGORY_LABELS,
   type ShelfCategory,
 } from '@/lib/exercise-shelves';
@@ -35,6 +35,24 @@ const LEVEL_LABELS: Record<string, string> = {
 
 const PAGE_SIZE = 20;
 
+const EXECUTION_FILTER_OPTIONS: { value: 'all' | ShelfCategory; label: string }[] = [
+  { value: 'all', label: 'Todos' },
+  { value: 'puxar', label: SHELF_CATEGORY_LABELS.puxar },
+  { value: 'empurrar', label: SHELF_CATEGORY_LABELS.empurrar },
+  { value: 'inferiores', label: SHELF_CATEGORY_LABELS.inferiores },
+  { value: 'cardio', label: SHELF_CATEGORY_LABELS.cardio },
+];
+
+function matchesExerciseSearch(exercise: Exercise, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    exercise.name.toLowerCase().includes(q) ||
+    (exercise.execution_type?.toLowerCase().includes(q) ?? false) ||
+    (exercise.subnome?.toLowerCase().includes(q) ?? false)
+  );
+}
+
 interface ApiResponse {
   data: Exercise[];
   count: number;
@@ -45,11 +63,9 @@ interface ApiResponse {
 export function ExerciseTable() {
   const { accessToken } = useAuth();
   const [exercises, setExercises] = useState<Exercise[]>([]);
-  const [totalCount, setTotalCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [filterPrateleira, setFilterPrateleira] = useState('all');
-  const [filterMuscleGroup, setFilterMuscleGroup] = useState('all');
+  const [executionCategoryFilter, setExecutionCategoryFilter] = useState<'all' | ShelfCategory>('all');
   const [page, setPage] = useState(0);
 
   const [viewMode, setViewMode] = useState<'lista' | 'cards'>('lista');
@@ -67,9 +83,26 @@ export function ExerciseTable() {
   const [deleteTarget, setDeleteTarget] = useState<Exercise | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  const searchFilteredExercises = useMemo(
+    () => exercises.filter((ex) => matchesExerciseSearch(ex, search)),
+    [exercises, search]
+  );
+
+  const listExercises = useMemo(() => {
+    if (executionCategoryFilter === 'all') return searchFilteredExercises;
+    return filterByCategory(
+      searchFilteredExercises as Parameters<typeof filterByCategory>[0],
+      executionCategoryFilter
+    ) as Exercise[];
+  }, [searchFilteredExercises, executionCategoryFilter]);
+
   const shelves = useMemo(
-    () => getShelvesForCategory(exercises as Parameters<typeof getShelvesForCategory>[0], shelfCategory),
-    [exercises, shelfCategory]
+    () =>
+      getShelvesForCategory(
+        searchFilteredExercises as Parameters<typeof getShelvesForCategory>[0],
+        shelfCategory
+      ),
+    [searchFilteredExercises, shelfCategory]
   );
 
   const handleRowPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
@@ -103,17 +136,7 @@ export function ExerciseTable() {
   const fetchExercises = useCallback(async () => {
     setIsLoading(true);
     try {
-      const isShelfMode = viewMode === 'cards';
-      const params = new URLSearchParams(
-        isShelfMode
-          ? { limit: '5000', offset: '0' }
-          : { limit: String(PAGE_SIZE), offset: String(page * PAGE_SIZE) }
-      );
-      if (search) params.set('search', search);
-      if (!isShelfMode) {
-        if (filterPrateleira && filterPrateleira !== 'all') params.set('prateleira', filterPrateleira);
-        if (filterMuscleGroup && filterMuscleGroup !== 'all') params.set('muscle_group', filterMuscleGroup);
-      }
+      const params = new URLSearchParams({ limit: '5000', offset: '0' });
 
       const res = await fetch(`/api/exercises?${params.toString()}`, {
         headers: authHeader,
@@ -122,14 +145,13 @@ export function ExerciseTable() {
       if (!res.ok) throw new Error('Erro ao buscar exercícios');
       const data: ApiResponse = await res.json();
       setExercises(data.data);
-      setTotalCount(data.count);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erro ao buscar exercícios');
     } finally {
       setIsLoading(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, filterPrateleira, filterMuscleGroup, page, accessToken, viewMode]);
+  }, [accessToken]);
 
   useEffect(() => {
     void fetchExercises();
@@ -138,7 +160,7 @@ export function ExerciseTable() {
   // Reset page when filters change
   useEffect(() => {
     setPage(0);
-  }, [search, filterPrateleira, filterMuscleGroup]);
+  }, [search, executionCategoryFilter]);
 
   async function handleDelete(exercise: Exercise) {
     setIsDeleting(true);
@@ -158,12 +180,17 @@ export function ExerciseTable() {
     }
   }
 
+  const totalCount = listExercises.length;
+  const paginatedList = useMemo(
+    () => listExercises.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE),
+    [listExercises, page]
+  );
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
 
   return (
     <div className="space-y-4">
       {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-start gap-3">
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -174,29 +201,27 @@ export function ExerciseTable() {
           />
         </div>
 
-        <Select value={filterPrateleira} onValueChange={setFilterPrateleira}>
-          <SelectTrigger className="w-40">
-            <SelectValue placeholder="Prateleira" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Todas</SelectItem>
-            {['Peito', 'Costas', 'Ombros', 'Bíceps', 'Tríceps', 'Pernas', 'Glúteos', 'Abdômen', 'Cardio', 'Funcional', 'Mobilidade'].map((p) => (
-              <SelectItem key={p} value={p}>{p}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <Select value={filterMuscleGroup} onValueChange={setFilterMuscleGroup}>
-          <SelectTrigger className="w-44">
-            <SelectValue placeholder="Grupo Muscular" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Todos</SelectItem>
-            {['Peitoral', 'Dorsal', 'Deltóide', 'Bíceps', 'Tríceps', 'Quadríceps', 'Posterior', 'Glúteo', 'Core'].map((m) => (
-              <SelectItem key={m} value={m}>{m}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {viewMode === 'lista' && (
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:min-w-[320px]">
+            <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Tipo de execução
+            </span>
+            <div className="flex flex-wrap gap-2">
+              {EXECUTION_FILTER_OPTIONS.map((opt) => (
+                <Button
+                  key={opt.value}
+                  type="button"
+                  size="sm"
+                  variant={executionCategoryFilter === opt.value ? 'secondary' : 'outline'}
+                  className="h-8 text-xs"
+                  onClick={() => setExecutionCategoryFilter(opt.value)}
+                >
+                  {opt.label}
+                </Button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="flex items-center rounded-md border">
           <Button
@@ -399,14 +424,14 @@ export function ExerciseTable() {
                     <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
                   </td>
                 </tr>
-              ) : exercises.length === 0 ? (
+              ) : paginatedList.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-12 text-center text-muted-foreground">
                     Nenhum exercício encontrado
                   </td>
                 </tr>
               ) : (
-                exercises.map((exercise) => (
+                paginatedList.map((exercise) => (
                   <tr key={exercise.id} className="border-b last:border-0 hover:bg-muted/30">
                     <td className="px-4 py-3">
                       <div className="h-10 w-10 overflow-hidden rounded-md border">
@@ -518,8 +543,8 @@ export function ExerciseTable() {
           }
         }}
       >
-        <DialogContent className="!w-[98vw] !max-w-[98vw] !h-[98vh] !max-h-[98vh] !p-0 !gap-0 flex flex-col">
-          <DialogHeader className="px-4 pt-5 pb-3 border-b border-border">
+        <DialogContent className="!fixed !inset-0 !left-0 !top-0 !z-50 flex !h-[100dvh] !max-h-[100dvh] !w-full !max-w-full !translate-x-0 !translate-y-0 flex-col gap-0 !rounded-none border-0 p-0 sm:!inset-auto sm:!left-1/2 sm:!top-1/2 sm:!h-[98dvh] sm:!max-h-[98dvh] sm:!w-[98vw] sm:!max-w-[98vw] sm:!-translate-x-1/2 sm:!-translate-y-1/2 sm:!rounded-lg sm:border">
+          <DialogHeader className="flex-shrink-0 px-4 pb-3 pt-[max(1rem,env(safe-area-inset-top))] border-b border-border sm:pt-5">
             <DialogTitle>
               {dialogMode === 'create' ? 'Novo Exercício' : 'Editar Exercício'}
             </DialogTitle>
@@ -532,6 +557,12 @@ export function ExerciseTable() {
           <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
             <ExerciseForm
               exercise={dialogMode === 'edit' ? selectedExercise : null}
+              onMediaUpdated={(patch) => {
+                setSelectedExercise((prev) => (prev ? { ...prev, ...patch } : prev));
+                setExercises((prev) =>
+                  prev.map((ex) => (ex.id === selectedExercise?.id ? { ...ex, ...patch } : ex))
+                );
+              }}
               onSaved={() => {
                 setDialogMode(null);
                 setSelectedExercise(null);

@@ -5,10 +5,22 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { format } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
-import { Flame, LayoutDashboard, Dumbbell, LogOut, PanelLeftClose, PanelLeft, ShieldCheck, UserCheck } from 'lucide-react'
+import {
+  Flame,
+  LayoutDashboard,
+  Dumbbell,
+  LogOut,
+  PanelLeftClose,
+  PanelLeft,
+  ShieldCheck,
+  UserCheck,
+  Menu,
+  X,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { useAuth } from '@/contexts/auth-context'
+import { useIsMobile } from '@/hooks/use-mobile'
 import { cn } from '@/lib/utils'
 
 type NavItem = { title: string; href: string; icon: React.ElementType; section: 'main' | 'tools' }
@@ -182,11 +194,21 @@ export function BackofficeShell({ children }: { children: React.ReactNode }) {
   const pathname  = usePathname()
   const router    = useRouter()
   const { user, logout } = useAuth()
+  const isMobile = useIsMobile()
 
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false
     try { return localStorage.getItem(COLLAPSED_KEY) === '1' } catch { return false }
   })
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
+
+  useEffect(() => {
+    setMobileNavOpen(false)
+  }, [pathname])
+
+  useEffect(() => {
+    if (isMobile) setMobileNavOpen(false)
+  }, [isMobile])
 
   const toggle = useCallback(() => {
     setCollapsed(c => {
@@ -205,10 +227,11 @@ export function BackofficeShell({ children }: { children: React.ReactNode }) {
 
   const title    = pageTitle(pathname)
   const dateLabel = format(new Date(), "EEEE, d 'de' MMMM yyyy", { locale: ptBR })
+  const sidebarExpanded = isMobile ? true : !collapsed
 
   const navSection = (label: string, section: 'main' | 'tools') => (
     <div key={label} className="space-y-1">
-      {!collapsed && (
+      {sidebarExpanded && (
         <p className="px-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
           {label}
         </p>
@@ -220,17 +243,20 @@ export function BackofficeShell({ children }: { children: React.ReactNode }) {
           <Link
             key={item.href}
             href={item.href}
-            title={collapsed ? item.title : undefined}
+            title={!sidebarExpanded ? item.title : undefined}
+            onClick={() => {
+              if (isMobile) setMobileNavOpen(false)
+            }}
             className={cn(
               'flex items-center rounded-xl py-2 text-sm transition-colors',
-              collapsed ? 'justify-center px-0' : 'gap-2.5 px-2.5',
+              sidebarExpanded ? 'gap-2.5 px-2.5' : 'justify-center px-0',
               active
                 ? 'bg-orange-500/15 text-orange-100 ring-1 ring-orange-500/35'
                 : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100'
             )}
           >
             <Icon className={cn('h-4 w-4 flex-shrink-0', active ? 'text-orange-400' : '')} />
-            {!collapsed && <span className="truncate">{item.title}</span>}
+            {sidebarExpanded && <span className="truncate">{item.title}</span>}
           </Link>
         )
       })}
@@ -239,19 +265,37 @@ export function BackofficeShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-dvh max-h-dvh min-h-0 w-full overflow-hidden bg-[#09090b] text-zinc-100">
-      {/* Sidebar */}
-      <aside className={cn(
-        'flex h-full min-h-0 flex-shrink-0 flex-col border-r border-zinc-800/90 bg-[#0c0c0f] transition-[width] duration-200',
-        collapsed ? 'w-[72px] max-w-[72px]' : 'w-[248px] max-w-[248px]'
-      )}>
+      {isMobile && mobileNavOpen ? (
+        <button
+          type="button"
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-[1px]"
+          aria-label="Fechar menu"
+          onClick={() => setMobileNavOpen(false)}
+        />
+      ) : null}
+
+      {/* Sidebar — drawer no mobile, coluna fixa no desktop */}
+      <aside
+        className={cn(
+          'flex h-full min-h-0 flex-shrink-0 flex-col border-r border-zinc-800/90 bg-[#0c0c0f] transition-[width,transform] duration-200',
+          isMobile
+            ? cn(
+                'fixed inset-y-0 left-0 z-50 w-[min(280px,88vw)] max-w-[280px] shadow-2xl',
+                mobileNavOpen ? 'translate-x-0' : '-translate-x-full pointer-events-none'
+              )
+            : collapsed
+              ? 'w-[72px] max-w-[72px]'
+              : 'w-[248px] max-w-[248px]'
+        )}
+      >
         <div className={cn(
           'flex flex-shrink-0 items-center gap-2 border-b border-zinc-800/80 py-4',
-          collapsed ? 'flex-col px-2' : 'px-4'
+          sidebarExpanded ? 'px-4' : 'flex-col px-2'
         )}>
           <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-orange-500/15 ring-1 ring-orange-500/40">
             <Flame className="h-5 w-5 text-orange-500" />
           </div>
-          {!collapsed && (
+          {sidebarExpanded && (
             <div className="min-w-0 flex-1 leading-tight">
               <p className="text-[11px] font-bold uppercase tracking-wide text-zinc-100">
                 Atlas <span className="text-orange-500">Backoffice</span>
@@ -259,35 +303,50 @@ export function BackofficeShell({ children }: { children: React.ReactNode }) {
               <p className="text-[9px] text-zinc-500">Painel interno 2.0</p>
             </div>
           )}
-          <Button
-            type="button" variant="ghost" size="icon"
-            className={cn('h-8 w-8 flex-shrink-0 text-zinc-500 hover:text-zinc-200', collapsed && 'mt-1')}
-            onClick={toggle}
-            title={collapsed ? 'Expandir' : 'Recolher'}
-          >
-            {collapsed ? <PanelLeft className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
-          </Button>
+          {isMobile ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 flex-shrink-0 text-zinc-500 hover:text-zinc-200"
+              title="Fechar menu"
+              onClick={() => setMobileNavOpen(false)}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className={cn('h-8 w-8 flex-shrink-0 text-zinc-500 hover:text-zinc-200', collapsed && 'mt-1')}
+              onClick={toggle}
+              title={collapsed ? 'Expandir' : 'Recolher'}
+            >
+              {collapsed ? <PanelLeft className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+            </Button>
+          )}
         </div>
 
         <nav className={cn(
           'min-h-0 flex-1 space-y-5 overflow-y-auto overflow-x-hidden overscroll-contain py-4',
-          collapsed ? 'px-1.5' : 'px-2'
+          sidebarExpanded ? 'px-2' : 'px-1.5'
         )}>
           {navSection('Principal', 'main')}
           {navSection('Ferramentas', 'tools')}
         </nav>
 
-        <div className={cn('flex-shrink-0 border-t border-zinc-800/80', collapsed ? 'p-2' : 'p-3')}>
+        <div className={cn('flex-shrink-0 border-t border-zinc-800/80', sidebarExpanded ? 'p-3' : 'p-2')}>
           <div className={cn(
             'flex items-center gap-2 rounded-xl border border-zinc-800/80 bg-zinc-950/60 py-2',
-            collapsed ? 'flex-col px-1' : 'px-2'
+            sidebarExpanded ? 'px-2' : 'flex-col px-1'
           )}>
             <Avatar className="h-9 w-9 flex-shrink-0">
               <AvatarFallback className="bg-orange-500/20 text-[11px] font-semibold text-orange-200">
                 {initials}
               </AvatarFallback>
             </Avatar>
-            {!collapsed && (
+            {sidebarExpanded && (
               <div className="min-w-0 flex-1">
                 <p className="truncate text-xs font-medium text-zinc-200">
                   {user?.full_name || user?.email?.split('@')[0]}
@@ -299,10 +358,16 @@ export function BackofficeShell({ children }: { children: React.ReactNode }) {
               </div>
             )}
             <Button
-              type="button" variant="ghost" size="icon"
+              type="button"
+              variant="ghost"
+              size="icon"
               className="h-8 w-8 flex-shrink-0 text-zinc-500 hover:text-zinc-200"
               title="Sair"
-              onClick={async () => { await logout(); router.push('/login') }}
+              onClick={async () => {
+                if (isMobile) setMobileNavOpen(false)
+                await logout()
+                router.push('/login')
+              }}
             >
               <LogOut className="h-4 w-4" />
             </Button>
@@ -312,10 +377,22 @@ export function BackofficeShell({ children }: { children: React.ReactNode }) {
 
       {/* Main */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="flex h-[52px] max-h-[52px] flex-shrink-0 items-center border-b border-zinc-800/80 bg-[#09090b]/95 px-5 backdrop-blur">
-          <div>
-            <h1 className="text-sm font-semibold capitalize text-zinc-100">{title}</h1>
-            <p className="text-[11px] text-zinc-500 first-letter:uppercase">{dateLabel}</p>
+        <header className="flex h-[52px] max-h-[52px] flex-shrink-0 items-center gap-3 border-b border-zinc-800/80 bg-[#09090b]/95 px-4 backdrop-blur sm:px-5">
+          {isMobile ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-9 w-9 shrink-0 text-zinc-300 hover:text-zinc-100"
+              title="Abrir menu"
+              onClick={() => setMobileNavOpen(true)}
+            >
+              <Menu className="h-5 w-5" />
+            </Button>
+          ) : null}
+          <div className="min-w-0">
+            <h1 className="truncate text-sm font-semibold capitalize text-zinc-100">{title}</h1>
+            <p className="truncate text-[11px] text-zinc-500 first-letter:uppercase">{dateLabel}</p>
           </div>
         </header>
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden bg-[#09090b]">
