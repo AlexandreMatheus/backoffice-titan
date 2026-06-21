@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { supabaseAdmin } from '@/lib/supabase/client';
 import { extractTokenFromHeader, verifyAccessToken } from '@/lib/auth/jwt';
 import {
@@ -9,6 +9,25 @@ import {
   resolveMediaContentType,
   type MediaKind,
 } from '@/lib/media-validation';
+
+function parseR2StorageUrl(value: string): { bucket: string; key: string } | null {
+  const match = /^r2:\/\/([^/]+)\/(.+)$/.exec(value.trim());
+  if (!match) return null;
+  return { bucket: match[1], key: match[2] };
+}
+
+async function deleteR2Object(storageUrl: string, expectedBucket: string) {
+  const parsed = parseR2StorageUrl(storageUrl);
+  if (!parsed) return;
+  if (parsed.bucket !== expectedBucket) return;
+  const client = getR2Client();
+  await client.send(
+    new DeleteObjectCommand({
+      Bucket: parsed.bucket,
+      Key: parsed.key,
+    })
+  );
+}
 
 function getR2Client() {
   const accountId = process.env.R2_ACCOUNT_ID;
@@ -143,4 +162,74 @@ export async function POST(
     console.error('[exercises/media] upload error:', error);
     return NextResponse.json({ error: 'Erro ao enviar mídia' }, { status: 500 });
   }
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const authHeader = request.headers.get('authorization');
+  const token = extractTokenFromHeader(authHeader);
+  const payload = verifyAccessToken(token ?? undefined);
+  if (!payload) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  if (payload.userType !== 'admin') {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
+  const bucket = process.env.R2_BUCKET;
+  if (!bucket) {
+    return NextResponse.json({ error: 'R2_BUCKET not configured' }, { status: 500 });
+  }
+
+  const { id: exerciseId } = await params;
+  const kindRaw = request.nextUrl.searchParams.get('kind');
+  if (kindRaw !== 'photo' && kindRaw !== 'video') {
+    return NextResponse.json({ error: 'kind must be photo or video' }, { status: 400 });
+  }
+  const kind = kindRaw as MediaKind;
+
+  const { data: existing, error: fetchError } = await supabaseAdmin
+    .from('exercises')
+    .select('id, r2_photo_url, r2_video_url')
+    .eq('id', exerciseId)
+    .is('created_by', null)
+    .maybeSingle();
+
+  if (fetchError) {
+    console.error('[exercises/media] fetch error:', fetchError);
+    return NextResponse.json({ error: 'Erro ao buscar exercício' }, { status: 500 });
+  }
+  if (!existing) {
+    return NextResponse.json({ error: 'Exercício não encontrado' }, { status: 404 });
+  }
+
+  const storageUrl = kind === 'photo' ? existing.r2_photo_url : existing.r2_video_url;
+  if (storageUrl) {
+    try {
+      await deleteR2Object(storageUrl, bucket);
+    } catch (error) {
+      console.error('[exercises/media] delete object error:', error);
+    }
+  }
+
+  const field = kind === 'photo' ? 'r2_photo_url' : 'r2_video_url';
+  const { data, error } = await supabaseAdmin
+    .from('exercises')
+    .update({
+      [field]: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', exerciseId)
+    .is('created_by', null)
+    .select('id, r2_photo_url, r2_video_url')
+    .single();
+
+  if (error || !data) {
+    console.error('[exercises/media] db clear error:', error);
+    return NextResponse.json({ error: 'Erro ao remover mídia do banco' }, { status: 500 });
+  }
+
+  return NextResponse.json({ success: true, kind, exercise: data });
 }

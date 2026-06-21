@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Loader2, Image as ImageIcon, Video } from 'lucide-react';
+import { Loader2, Image as ImageIcon, Video, Crop } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,6 +11,7 @@ import { Combobox } from '@/components/ui/combobox';
 import { ComboboxSingle } from '@/components/ui/combobox-single';
 import { CustomBodySvg } from '@/components/CustomBodySvg';
 import { ExercisePhoto } from '@/components/exercise-photo';
+import { PhotoCropEditor } from '@/components/photo-crop-editor';
 import { useAuth } from '@/contexts/auth-context';
 import { useBodySvgScale } from '@/hooks/use-mobile';
 import { useR2Photo } from '@/hooks/use-r2-photo';
@@ -183,6 +184,10 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
   });
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [isUploadingVideo, setIsUploadingVideo] = useState(false);
+  const [isDeletingPhoto, setIsDeletingPhoto] = useState(false);
+  const [isDeletingVideo, setIsDeletingVideo] = useState(false);
+  const [cropEditor, setCropEditor] = useState<{ src: string; ownedBlob?: boolean } | null>(null);
+  const { resolvedUrl: resolvedPhotoUrl } = useR2Photo(mediaUrls.r2_photo_url);
 
   useEffect(() => {
     setMediaUrls({
@@ -301,10 +306,80 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
     [accessToken, exercise?.id, onMediaUpdated]
   );
 
+  const deleteMedia = useCallback(
+    async (kind: 'photo' | 'video') => {
+      if (!exercise?.id || !accessToken) {
+        toast.error('Salve o exercício antes de remover mídia.');
+        return;
+      }
+
+      const label = kind === 'photo' ? 'foto' : 'vídeo';
+      if (!confirm(`Excluir a ${label} deste exercício?`)) {
+        return;
+      }
+
+      const setDeleting = kind === 'photo' ? setIsDeletingPhoto : setIsDeletingVideo;
+      setDeleting(true);
+      try {
+        const res = await fetch(`/api/exercises/${exercise.id}/media?kind=${kind}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        if (!res.ok) {
+          throw new Error(data.error ?? `Erro ao excluir ${label}`);
+        }
+        const field = kind === 'photo' ? 'r2_photo_url' : 'r2_video_url';
+        setMediaUrls((prev) => ({ ...prev, [field]: null }));
+        onMediaUpdated?.({ [field]: null });
+        toast.success(kind === 'photo' ? 'Foto excluída!' : 'Vídeo excluído!');
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : `Erro ao excluir ${label}`);
+      } finally {
+        setDeleting(false);
+      }
+    },
+    [accessToken, exercise?.id, onMediaUpdated]
+  );
+
   const handlePhotoFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
-    if (file) void uploadMedia(file, 'photo');
+    if (!file) return;
+    const validationError = validateMediaFile(file, 'photo');
+    if (validationError) {
+      toast.error(validationError);
+      return;
+    }
+    const src = URL.createObjectURL(file);
+    setCropEditor({ src, ownedBlob: true });
+  };
+
+  const handleResizePhoto = () => {
+    if (!mediaUrls.r2_photo_url) {
+      toast.error('Envie uma foto antes de redimensionar.');
+      return;
+    }
+    if (!resolvedPhotoUrl) {
+      toast.error('Aguarde o carregamento da foto ou tente novamente.');
+      return;
+    }
+    setCropEditor({ src: resolvedPhotoUrl });
+  };
+
+  const handleCropCancel = () => {
+    if (cropEditor?.ownedBlob && cropEditor.src.startsWith('blob:')) {
+      URL.revokeObjectURL(cropEditor.src);
+    }
+    setCropEditor(null);
+  };
+
+  const handleCropConfirm = (file: File) => {
+    if (cropEditor?.ownedBlob && cropEditor.src.startsWith('blob:')) {
+      URL.revokeObjectURL(cropEditor.src);
+    }
+    setCropEditor(null);
+    void uploadMedia(file, 'photo');
   };
 
   const handleVideoFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -663,7 +738,7 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
         )}
 
         {activeTab === 'media' && (
-          <div className="max-w-2xl space-y-4">
+          <div className="max-w-2xl space-y-6">
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               {/* Photo */}
               <div className="space-y-2">
@@ -682,24 +757,12 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
                       </div>
                     </>
                   ) : mediaUrls.r2_photo_url ? (
-                    <div className="relative h-full w-full">
-                      <ExercisePhoto
-                        r2PhotoUrl={mediaUrls.r2_photo_url}
-                        name={formData.name || 'Exercício'}
-                        fill
-                        className="object-cover"
-                      />
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        className="absolute bottom-2 right-2 h-7 bg-black/70 text-xs text-white hover:bg-black/85"
-                        onClick={() => photoInputRef.current?.click()}
-                        disabled={isUploadingPhoto}
-                      >
-                        Substituir
-                      </Button>
-                    </div>
+                    <ExercisePhoto
+                      r2PhotoUrl={mediaUrls.r2_photo_url}
+                      name={formData.name || 'Exercício'}
+                      fill
+                      className="object-cover object-[70%_center]"
+                    />
                   ) : (
                     <button
                       type="button"
@@ -714,6 +777,41 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
                     </button>
                   )}
                 </div>
+                {mediaUrls.r2_photo_url ? (
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="bg-orange-500 text-white hover:bg-orange-600"
+                      onClick={() => photoInputRef.current?.click()}
+                      disabled={isUploadingPhoto || isDeletingPhoto}
+                    >
+                      Substituir
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={handleResizePhoto}
+                      disabled={isUploadingPhoto || isDeletingPhoto || !resolvedPhotoUrl}
+                    >
+                      <Crop className="mr-1 h-4 w-4" />
+                      Redimensionar
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => void deleteMedia('photo')}
+                      disabled={isUploadingPhoto || isDeletingPhoto}
+                    >
+                      {isDeletingPhoto ? (
+                        <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                      ) : null}
+                      Excluir
+                    </Button>
+                  </div>
+                ) : null}
               </div>
 
               {/* Video */}
@@ -732,19 +830,7 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
                       </div>
                     </>
                   ) : mediaUrls.r2_video_url ? (
-                    <div className="relative h-full w-full">
-                      <MediaVideoPreview r2VideoUrl={mediaUrls.r2_video_url} />
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        className="absolute bottom-2 right-2 h-7 bg-black/70 text-xs text-white hover:bg-black/85"
-                        onClick={() => videoInputRef.current?.click()}
-                        disabled={isUploadingVideo}
-                      >
-                        Substituir
-                      </Button>
-                    </div>
+                    <MediaVideoPreview r2VideoUrl={mediaUrls.r2_video_url} />
                   ) : (
                     <button
                       type="button"
@@ -759,20 +845,58 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
                     </button>
                   )}
                 </div>
+                {mediaUrls.r2_video_url ? (
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="bg-orange-500 text-white hover:bg-orange-600"
+                      onClick={() => videoInputRef.current?.click()}
+                      disabled={isUploadingVideo || isDeletingVideo}
+                    >
+                      Substituir
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => void deleteMedia('video')}
+                      disabled={isUploadingVideo || isDeletingVideo}
+                    >
+                      {isDeletingVideo ? (
+                        <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                      ) : null}
+                      Excluir
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             </div>
+
+            {mediaUrls.r2_photo_url ? (
+              <div className="space-y-2 border-t border-border pt-4">
+                <h4 className="text-sm font-medium">Preview no card do app</h4>
+                <p className="text-xs text-muted-foreground">
+                  Mesma proporção do card da biblioteca (50% da tela × 130px).
+                </p>
+                <div className="mx-auto w-[195px] overflow-hidden rounded-lg border border-border bg-zinc-900">
+                  <div className="relative h-[130px] w-full">
+                    <ExercisePhoto
+                      r2PhotoUrl={mediaUrls.r2_photo_url}
+                      name={formData.name || 'Exercício'}
+                      fill
+                      className="object-cover object-[70%_center]"
+                    />
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
             {!exercise && (
               <p className="text-xs text-muted-foreground">
                 Salve o exercício na aba Informações antes de enviar fotos e vídeos.
               </p>
             )}
-
-            {exercise && (mediaUrls.r2_photo_url || mediaUrls.r2_video_url) ? (
-              <p className="text-xs text-muted-foreground">
-                Use &quot;Substituir&quot; para trocar foto ou vídeo já enviados.
-              </p>
-            ) : null}
 
             <input
               ref={photoInputRef}
@@ -787,6 +911,13 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
               accept={VIDEO_INPUT_ACCEPT}
               className="hidden"
               onChange={handleVideoFileSelect}
+            />
+
+            <PhotoCropEditor
+              open={!!cropEditor}
+              photoSrc={cropEditor?.src ?? ''}
+              onConfirm={handleCropConfirm}
+              onCancel={handleCropCancel}
             />
           </div>
         )}
