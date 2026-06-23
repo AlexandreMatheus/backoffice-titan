@@ -95,7 +95,7 @@ export function panAfterZoomChange(
   return { panX: panX * r, panY: panY * r };
 }
 
-function layoutPreview(
+export function layoutPreview(
   nw: number,
   nh: number,
   cropW: number,
@@ -110,6 +110,79 @@ function layoutPreview(
   const tx = (cropW - dispW) / 2 + panX;
   const ty = (cropH - dispH) / 2 + panY;
   return { dispW, dispH, tx, ty };
+}
+
+/** Mantém a imagem dentro do viewport; centraliza quando menor que o recorte (letterbox). */
+export function clampPanForViewport(
+  naturalWidth: number,
+  naturalHeight: number,
+  cropViewportWidth: number,
+  cropViewportHeight: number,
+  zoom: number,
+  panX: number,
+  panY: number
+): { panX: number; panY: number } {
+  if (!(naturalWidth > 0 && naturalHeight > 0 && cropViewportWidth > 0 && cropViewportHeight > 0)) {
+    return { panX, panY };
+  }
+
+  const { dispW, dispH } = layoutPreview(
+    naturalWidth,
+    naturalHeight,
+    cropViewportWidth,
+    cropViewportHeight,
+    zoom,
+    panX,
+    panY
+  );
+
+  let tx = (cropViewportWidth - dispW) / 2 + panX;
+  let ty = (cropViewportHeight - dispH) / 2 + panY;
+
+  const minTx = cropViewportWidth - dispW;
+  const maxTx = 0;
+  const minTy = cropViewportHeight - dispH;
+  const maxTy = 0;
+
+  if (minTx > maxTx) {
+    tx = (cropViewportWidth - dispW) / 2;
+  } else {
+    tx = Math.min(maxTx, Math.max(minTx, tx));
+  }
+
+  if (minTy > maxTy) {
+    ty = (cropViewportHeight - dispH) / 2;
+  } else {
+    ty = Math.min(maxTy, Math.max(minTy, ty));
+  }
+
+  return {
+    panX: tx - (cropViewportWidth - dispW) / 2,
+    panY: ty - (cropViewportHeight - dispH) / 2,
+  };
+}
+
+export function applyZoomChange(
+  oldZoom: number,
+  newZoom: number,
+  panX: number,
+  panY: number,
+  naturalWidth: number,
+  naturalHeight: number,
+  cropViewportWidth: number,
+  cropViewportHeight: number
+): { zoom: number; panX: number; panY: number } {
+  const scaled = panAfterZoomChange(oldZoom, newZoom, panX, panY);
+  const clamped = clampPanForViewport(
+    naturalWidth,
+    naturalHeight,
+    cropViewportWidth,
+    cropViewportHeight,
+    newZoom,
+    scaled.panX,
+    scaled.panY
+  );
+  return { zoom: newZoom, ...clamped };
 }
 
 export interface ExerciseCropExportParams {

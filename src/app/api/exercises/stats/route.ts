@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase/client';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { verifyAccessToken, extractTokenFromHeader } from '@/lib/auth/jwt';
 
 // GET /api/exercises/stats?count=total|with_photo|with_video
@@ -12,6 +12,7 @@ export async function GET(request: NextRequest) {
 
   const count = request.nextUrl.searchParams.get('count') ?? 'total';
 
+  const supabaseAdmin = getSupabaseAdmin();
   let query = supabaseAdmin
     .from('exercises')
     .select('*', { count: 'exact', head: true })

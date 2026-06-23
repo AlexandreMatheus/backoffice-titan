@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { extractTokenFromHeader, verifyAccessToken } from '@/lib/auth/jwt';
+import { buildR2StorageUrl, buildUniqueExerciseR2Key } from '@/lib/exercise-r2-media';
 import { z } from 'zod';
 
 /** Parses `r2://bucket/key` → { bucket, key } */
@@ -69,8 +70,14 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Validation error' }, { status: 400 });
       }
       const { exerciseId, kind, contentType } = parsed.data;
-      const ext = kind === 'video' ? 'mp4' : 'jpg';
-      const key = `exercises/${exerciseId}/r2/${kind}.${ext}`;
+      const ext =
+        contentType?.includes('png') ? 'png'
+        : contentType?.includes('webp') ? 'webp'
+        : contentType?.includes('gif') ? 'gif'
+        : contentType?.includes('webm') ? 'webm'
+        : contentType?.includes('quicktime') ? 'mov'
+        : kind === 'video' ? 'mp4' : 'jpg';
+      const key = buildUniqueExerciseR2Key(exerciseId, kind, ext);
       const command = new PutObjectCommand({
         Bucket: bucket,
         Key: key,
@@ -80,7 +87,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         url,
         key,
-        storageUrl: `r2://${bucket}/${key}`,
+        storageUrl: buildR2StorageUrl(bucket, key),
         expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
       });
     }

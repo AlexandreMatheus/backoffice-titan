@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabaseAdmin, SupabaseAdminConfigError } from '@/lib/supabase/client';
+import { getSupabaseAdmin, SupabaseAdminConfigError } from '@/lib/supabase/admin';
 import { requireAdmin, TRAINER_PROFILE_ROLES } from '@/lib/personals';
 
 const TRAINER_ROLE_FILTER = TRAINER_PROFILE_ROLES.join(',');

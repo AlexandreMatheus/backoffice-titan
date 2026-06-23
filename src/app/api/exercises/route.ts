@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase/client';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { extractTokenFromHeader, verifyAccessToken } from '@/lib/auth/jwt';
 import { z } from 'zod';
 
@@ -39,6 +39,7 @@ export async function GET(request: NextRequest) {
   const limit = Math.min(parseInt(searchParams.get('limit') || '50', 10), 5000);
   const offset = parseInt(searchParams.get('offset') || '0', 10);
 
+  const supabaseAdmin = getSupabaseAdmin();
   let query = supabaseAdmin
     .from('exercises')
     .select('*', { count: 'exact' })
@@ -101,6 +102,7 @@ export async function POST(request: NextRequest) {
     thumbnail_url: parsed.data.thumbnail_url || null,
   };
 
+  const supabaseAdmin = getSupabaseAdmin();
   const { data, error } = await supabaseAdmin
     .from('exercises')
     .insert(exerciseData)

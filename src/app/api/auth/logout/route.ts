@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase/client';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import {
   extractTokenFromHeader,
   verifyAccessToken,
@@ -8,6 +8,7 @@ import {
 
 export async function POST(request: NextRequest) {
   try {
+    const supabaseAdmin = getSupabaseAdmin();
     const authHeader = request.headers.get('authorization');
     const token = extractTokenFromHeader(authHeader);
     const payload = verifyAccessToken(token ?? undefined);

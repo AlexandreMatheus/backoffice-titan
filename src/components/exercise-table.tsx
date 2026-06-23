@@ -26,6 +26,8 @@ import {
 
 const DRAG_THRESHOLD = 5;
 const SHELF_SCROLL_STEP = 320;
+const SHELF_CARD_IMAGE_HEIGHT = 130;
+const MAX_SHELF_PREVIEW_CARDS = 5;
 
 const LEVEL_LABELS: Record<string, string> = {
   adaptacao: 'Adaptação',
@@ -72,6 +74,7 @@ export function ExerciseTable() {
 
   const [viewMode, setViewMode] = useState<'lista' | 'cards'>('lista');
   const [shelfCategory, setShelfCategory] = useState<ShelfCategory>('inferiores');
+  const [viewAllShelf, setViewAllShelf] = useState<{ shelfName: string; exercises: Exercise[] } | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const shelfRowRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const shelfScrollRef = useRef<HTMLDivElement | null>(null);
@@ -112,28 +115,45 @@ export function ExerciseTable() {
     if (target.closest('[data-shelf-card-interactive]')) return;
 
     const el = e.currentTarget;
-    el.setPointerCapture(e.pointerId);
+    const pointerId = e.pointerId;
+    el.setPointerCapture(pointerId);
     shelfScrollRef.current = el;
     shelfStartX.current = e.clientX;
     shelfStartScroll.current = el.scrollLeft;
     shelfHasDragged.current = false;
-    shelfPointerId.current = e.pointerId;
+    shelfPointerId.current = pointerId;
+
     const onMove = (ev: PointerEvent) => {
-      if (ev.pointerId !== shelfPointerId.current || !shelfScrollRef.current) return;
+      if (ev.pointerId !== pointerId || !shelfScrollRef.current) return;
       ev.preventDefault();
       const dx = shelfStartX.current - ev.clientX;
       if (Math.abs(dx) > DRAG_THRESHOLD) shelfHasDragged.current = true;
       shelfScrollRef.current.scrollLeft = shelfStartScroll.current + dx;
     };
-    const onUp = () => {
-      el.releasePointerCapture(shelfPointerId.current!);
+
+    const cleanup = () => {
+      try {
+        if (el.hasPointerCapture(pointerId)) {
+          el.releasePointerCapture(pointerId);
+        }
+      } catch {
+        // Capture may already be released (e.g. interactive card stole the pointer).
+      }
       shelfScrollRef.current = null;
       shelfPointerId.current = null;
       el.removeEventListener('pointermove', onMove as EventListener);
-      el.removeEventListener('pointerup', onUp);
+      el.removeEventListener('pointerup', onEnd as EventListener);
+      el.removeEventListener('pointercancel', onEnd as EventListener);
     };
+
+    const onEnd = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      cleanup();
+    };
+
     el.addEventListener('pointermove', onMove as EventListener, { passive: false });
-    el.addEventListener('pointerup', onUp);
+    el.addEventListener('pointerup', onEnd);
+    el.addEventListener('pointercancel', onEnd);
   }, []);
 
   const authHeader = { Authorization: `Bearer ${accessToken}` };
@@ -196,6 +216,114 @@ export function ExerciseTable() {
     [listExercises, page]
   );
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
+
+  const renderShelfExerciseCard = (exercise: Exercise, variant: 'shelf' | 'grid' = 'shelf') => (
+    <div
+      key={exercise.id}
+      data-shelf-card-interactive
+      className={[
+        'group flex flex-col shrink-0 rounded-2xl border border-border overflow-hidden bg-card transition-all hover:border-orange-500/40 hover:bg-muted/50',
+        variant === 'grid'
+          ? 'w-full'
+          : 'w-[50vw] min-w-[165px] max-w-[195px] sm:w-[195px]',
+      ].join(' ')}
+    >
+      <button
+        type="button"
+        data-shelf-card-interactive
+        className="flex flex-col flex-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-500"
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={() => {
+          if (shelfHasDragged.current) {
+            shelfHasDragged.current = false;
+            return;
+          }
+          setViewAllShelf(null);
+          openEditExercise(exercise);
+        }}
+      >
+        <div
+          className="relative w-full overflow-hidden bg-white"
+          style={{ height: SHELF_CARD_IMAGE_HEIGHT }}
+        >
+          <ExercisePhoto
+            r2PhotoUrl={typeof exercise.r2_photo_url === 'string' ? exercise.r2_photo_url : null}
+            name={exercise.name}
+            fill
+            fit="contain"
+          />
+          {!isMobile ? (
+            <div className="absolute inset-0 flex items-center justify-center gap-1.5 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none group-hover:pointer-events-auto">
+              <Button
+                variant="secondary"
+                size="icon"
+                className="h-7 w-7"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setViewAllShelf(null);
+                  openEditExercise(exercise);
+                }}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                variant="destructive"
+                size="icon"
+                className="h-7 w-7"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDeleteTarget(exercise);
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          ) : null}
+          {exercise.r2_video_url ? (
+            <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1 py-0.5 text-[10px] text-white pointer-events-none">▶</span>
+          ) : null}
+        </div>
+
+        <div className="p-2.5">
+          <span className="text-xs font-semibold line-clamp-2 text-foreground block">{exercise.name}</span>
+          {exercise.subnome ? (
+            <span className="text-[11px] line-clamp-1 text-muted-foreground block">{exercise.subnome}</span>
+          ) : null}
+        </div>
+      </button>
+
+      {isMobile ? (
+        <div className="flex gap-1 border-t border-border p-2">
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="h-8 flex-1 text-xs"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => {
+              setViewAllShelf(null);
+              openEditExercise(exercise);
+            }}
+          >
+            <Pencil className="h-3.5 w-3.5 mr-1" />
+            Editar
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => setDeleteTarget(exercise)}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
 
   return (
     <div className="space-y-4">
@@ -285,13 +413,35 @@ export function ExerciseTable() {
             </p>
           ) : (
             <div className="space-y-6">
-              {shelves.map(({ shelfName, exercises: shelfExercises }) => (
+              {shelves.map(({ shelfName, exercises: shelfExercises }) => {
+                const previewExercises = shelfExercises.slice(0, MAX_SHELF_PREVIEW_CARDS) as Exercise[];
+                const hasMore = shelfExercises.length > MAX_SHELF_PREVIEW_CARDS;
+                return (
                 <section
                   key={shelfName}
                   className="rounded-2xl border border-orange-500/25 bg-card/50 shadow-sm overflow-hidden"
                 >
-                  <div className="px-4 py-3 border-b border-orange-500/20 bg-orange-500/10">
-                    <h3 className="text-sm font-semibold text-orange-400 tracking-tight">{shelfName}</h3>
+                  <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-orange-500/20 bg-orange-500/10">
+                    <div>
+                      <h3 className="text-sm font-semibold text-orange-400 tracking-tight">{shelfName}</h3>
+                      <p className="text-[11px] text-muted-foreground">{shelfExercises.length} exercício(s)</p>
+                    </div>
+                    {hasMore ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 border-orange-500/40 text-xs text-orange-400 hover:bg-orange-500/10"
+                        onClick={() =>
+                          setViewAllShelf({
+                            shelfName,
+                            exercises: shelfExercises as Exercise[],
+                          })
+                        }
+                      >
+                        Ver todos
+                      </Button>
+                    ) : null}
                   </div>
                   <div className="flex items-stretch">
                     <Button
@@ -308,108 +458,29 @@ export function ExerciseTable() {
                     </Button>
                     <div
                       ref={(el) => { shelfRowRefs.current[shelfName] = el; }}
-                      className="flex flex-1 min-w-0 cursor-grab select-none gap-4 overflow-x-auto overflow-y-hidden overscroll-x-contain scroll-smooth px-2 py-4 [scrollbar-width:none] active:cursor-grabbing [&::-webkit-scrollbar]:hidden"
+                      className="flex flex-1 min-w-0 cursor-grab select-none gap-2 overflow-x-auto overflow-y-hidden overscroll-x-contain scroll-smooth px-2 py-4 [scrollbar-width:none] active:cursor-grabbing [&::-webkit-scrollbar]:hidden"
                       onPointerDown={handleRowPointerDown}
                     >
-                      {shelfExercises.map((ex) => {
-                        const exercise = ex as Exercise;
-                        return (
-                        <div
-                          key={ex.id}
+                      {previewExercises.map((exercise) => renderShelfExerciseCard(exercise))}
+                      {hasMore ? (
+                        <button
+                          type="button"
                           data-shelf-card-interactive
-                          className="group flex flex-col shrink-0 w-36 rounded-xl border-2 border-border overflow-hidden bg-card hover:border-orange-500/40 hover:bg-muted/50 transition-all"
+                          className="flex w-[50vw] min-w-[165px] max-w-[195px] sm:w-[195px] shrink-0 flex-col items-center justify-center rounded-2xl border border-dashed border-orange-500/40 bg-orange-500/10 p-4 text-center text-orange-400"
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={() =>
+                            setViewAllShelf({
+                              shelfName,
+                              exercises: shelfExercises as Exercise[],
+                            })
+                          }
                         >
-                          <button
-                            type="button"
-                            data-shelf-card-interactive
-                            className="flex flex-col flex-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-500"
-                            onPointerDown={(e) => e.stopPropagation()}
-                            onClick={() => {
-                              if (shelfHasDragged.current) {
-                                shelfHasDragged.current = false;
-                                return;
-                              }
-                              openEditExercise(exercise);
-                            }}
-                          >
-                          {/* Thumbnail */}
-                          <div className="relative aspect-square w-full bg-muted/70 overflow-hidden">
-                            <ExercisePhoto
-                              r2PhotoUrl={typeof ex.r2_photo_url === 'string' ? ex.r2_photo_url : null}
-                              name={ex.name}
-                              fill
-                              className="object-cover object-[70%_center]"
-                            />
-                            {/* Desktop: hover overlay */}
-                            {!isMobile ? (
-                              <div className="absolute inset-0 flex items-center justify-center gap-1.5 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none group-hover:pointer-events-auto">
-                                <Button
-                                  variant="secondary"
-                                  size="icon"
-                                  className="h-7 w-7"
-                                  onPointerDown={(e) => e.stopPropagation()}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    openEditExercise(exercise);
-                                  }}
-                                >
-                                  <Pencil className="h-3.5 w-3.5" />
-                                </Button>
-                                <Button
-                                  variant="destructive"
-                                  size="icon"
-                                  className="h-7 w-7"
-                                  onPointerDown={(e) => e.stopPropagation()}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setDeleteTarget(exercise);
-                                  }}
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </Button>
-                              </div>
-                            ) : null}
-                            {exercise.r2_video_url ? (
-                              <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1 py-0.5 text-[10px] text-white pointer-events-none">▶</span>
-                            ) : null}
-                          </div>
-                          {/* Info */}
-                          <div className="p-2.5">
-                            <span className="text-xs font-medium line-clamp-2 text-foreground block">{ex.name}</span>
-                            {ex.subnome ? (
-                              <span className="text-[11px] line-clamp-1 text-muted-foreground block">{ex.subnome}</span>
-                            ) : null}
-                          </div>
-                          </button>
-                          {/* Mobile: ações sempre visíveis (sem hover) */}
-                          {isMobile ? (
-                            <div className="flex gap-1 border-t border-border p-2">
-                              <Button
-                                type="button"
-                                variant="secondary"
-                                size="sm"
-                                className="h-8 flex-1 text-xs"
-                                onPointerDown={(e) => e.stopPropagation()}
-                                onClick={() => openEditExercise(exercise)}
-                              >
-                                <Pencil className="h-3.5 w-3.5 mr-1" />
-                                Editar
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="destructive"
-                                size="icon"
-                                className="h-8 w-8 shrink-0"
-                                onPointerDown={(e) => e.stopPropagation()}
-                                onClick={() => setDeleteTarget(exercise)}
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </Button>
-                            </div>
-                          ) : null}
-                        </div>
-                        );
-                      })}
+                          <span className="text-sm font-semibold">Ver todos</span>
+                          <span className="mt-1 text-xs text-muted-foreground">
+                            +{shelfExercises.length - MAX_SHELF_PREVIEW_CARDS} exercício(s)
+                          </span>
+                        </button>
+                      ) : null}
                     </div>
                     <Button
                       type="button"
@@ -425,11 +496,27 @@ export function ExerciseTable() {
                     </Button>
                   </div>
                 </section>
-              ))}
+              )})}
             </div>
           )}
         </div>
       )}
+
+      <Dialog open={!!viewAllShelf} onOpenChange={(open) => !open && setViewAllShelf(null)}>
+        <DialogContent className="max-h-[90dvh] max-w-3xl overflow-hidden p-0">
+          <DialogHeader className="border-b border-border px-4 py-4">
+            <DialogTitle>{viewAllShelf?.shelfName ?? 'Prateleira'}</DialogTitle>
+            <DialogDescription>
+              {viewAllShelf?.exercises.length ?? 0} exercício(s) nesta prateleira
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[calc(90dvh-96px)] overflow-y-auto p-4">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
+              {viewAllShelf?.exercises.map((exercise) => renderShelfExerciseCard(exercise, 'grid'))}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Image preview */}
       {imagePreviewUrl && (

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase/client';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { extractTokenFromHeader, verifyAccessToken } from '@/lib/auth/jwt';
 import { z } from 'zod';
 
@@ -39,6 +39,7 @@ export async function GET(
 
   const { id } = await params;
 
+  const supabaseAdmin = getSupabaseAdmin();
   const { data, error } = await supabaseAdmin
     .from('exercises')
     .select('*')
@@ -86,13 +87,13 @@ export async function PUT(
   if (updateData.video_url === '') updateData.video_url = null;
   if (updateData.thumbnail_url === '') updateData.thumbnail_url = null;
 
+  const supabaseAdmin = getSupabaseAdmin();
   const { data, error } = await supabaseAdmin
     .from('exercises')
     .update(updateData)
     .eq('id', id)
-    .is('created_by', null)
     .select()
-    .single();
+    .maybeSingle();
 
   if (error || !data) {
     console.error('Error updating exercise:', error);
@@ -117,6 +118,7 @@ export async function DELETE(
 
   const { id } = await params;
 
+  const supabaseAdmin = getSupabaseAdmin();
   const { error } = await supabaseAdmin
     .from('exercises')
     .delete()

@@ -761,7 +761,8 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
                       r2PhotoUrl={mediaUrls.r2_photo_url}
                       name={formData.name || 'Exercício'}
                       fill
-                      className="object-cover object-[70%_center]"
+                      fit="contain"
+                      className="bg-white"
                     />
                   ) : (
                     <button
@@ -880,12 +881,12 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
                   Mesma proporção do card da biblioteca (50% da tela × 130px).
                 </p>
                 <div className="mx-auto w-[195px] overflow-hidden rounded-lg border border-border bg-zinc-900">
-                  <div className="relative h-[130px] w-full">
+                  <div className="relative h-[130px] w-full bg-white">
                     <ExercisePhoto
                       r2PhotoUrl={mediaUrls.r2_photo_url}
                       name={formData.name || 'Exercício'}
                       fill
-                      className="object-cover object-[70%_center]"
+                      fit="contain"
                     />
                   </div>
                 </div>

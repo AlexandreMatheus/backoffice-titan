@@ -12,9 +12,10 @@ interface ExercisePhotoProps {
   fill?: boolean;
   width?: number;
   height?: number;
+  fit?: 'cover' | 'contain';
 }
 
-export function ExercisePhoto({ r2PhotoUrl, name, className, fill, width = 40, height = 40 }: ExercisePhotoProps) {
+export function ExercisePhoto({ r2PhotoUrl, name, className, fill, width = 40, height = 40, fit = 'cover' }: ExercisePhotoProps) {
   const { resolvedUrl, loading } = useR2Photo(r2PhotoUrl);
 
   if (loading) {
@@ -37,7 +38,7 @@ export function ExercisePhoto({ r2PhotoUrl, name, className, fill, width = 40, h
         src={resolvedUrl}
         alt={name}
         fill
-        className={cn('object-cover', className)}
+        className={cn(fit === 'contain' ? 'object-contain' : 'object-cover', className)}
         unoptimized
       />
     );
@@ -49,7 +50,7 @@ export function ExercisePhoto({ r2PhotoUrl, name, className, fill, width = 40, h
       alt={name}
       width={width}
       height={height}
-      className={cn('h-full w-full object-cover', className)}
+      className={cn('h-full w-full', fit === 'contain' ? 'object-contain' : 'object-cover', className)}
       unoptimized
     />
   );

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase/client';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -16,6 +16,7 @@ function isAdminEmail(email: string): boolean {
 
 export async function POST(request: NextRequest) {
   try {
+    const supabaseAdmin = getSupabaseAdmin();
     const body = await request.json() as { email?: string; password?: string };
     const { email, password } = body;
 

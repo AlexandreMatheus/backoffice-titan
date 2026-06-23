@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { DeleteObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import { supabaseAdmin } from '@/lib/supabase/client';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { extractTokenFromHeader, verifyAccessToken } from '@/lib/auth/jwt';
+import {
+  buildR2StorageUrl,
+  buildUniqueExerciseR2Key,
+  parseR2StorageUrl,
+} from '@/lib/exercise-r2-media';
 import {
   inferMediaExtension,
   isAllowedPhotoMime,
@@ -9,12 +14,6 @@ import {
   resolveMediaContentType,
   type MediaKind,
 } from '@/lib/media-validation';
-
-function parseR2StorageUrl(value: string): { bucket: string; key: string } | null {
-  const match = /^r2:\/\/([^/]+)\/(.+)$/.exec(value.trim());
-  if (!match) return null;
-  return { bucket: match[1], key: match[2] };
-}
 
 async function deleteR2Object(storageUrl: string, expectedBucket: string) {
   const parsed = parseR2StorageUrl(storageUrl);
@@ -101,11 +100,12 @@ export async function POST(
     );
   }
 
+  const supabaseAdmin = getSupabaseAdmin();
+
   const { data: existing, error: fetchError } = await supabaseAdmin
     .from('exercises')
-    .select('id')
+    .select('id, created_by, r2_photo_url, r2_video_url')
     .eq('id', exerciseId)
-    .is('created_by', null)
     .maybeSingle();
 
   if (fetchError) {
@@ -115,11 +115,19 @@ export async function POST(
   if (!existing) {
     return NextResponse.json({ error: 'Exercício não encontrado' }, { status: 404 });
   }
+  if (existing.created_by != null) {
+    return NextResponse.json(
+      { error: 'Apenas exercícios do sistema podem ser editados pelo backoffice' },
+      { status: 403 }
+    );
+  }
 
   try {
     const ext = inferMediaExtension(contentType, kind);
-    const key = `exercises/${exerciseId}/r2/${kind}.${ext}`;
-    const storageUrl = `r2://${bucket}/${key}`;
+    const previousStorageUrl =
+      kind === 'photo' ? existing.r2_photo_url : existing.r2_video_url;
+    const key = buildUniqueExerciseR2Key(exerciseId, kind, ext);
+    const storageUrl = buildR2StorageUrl(bucket, key);
     const buffer = Buffer.from(await file.arrayBuffer());
 
     const client = getR2Client();
@@ -140,16 +148,47 @@ export async function POST(
         updated_at: new Date().toISOString(),
       })
       .eq('id', exerciseId)
-      .is('created_by', null)
       .select('id, r2_photo_url, r2_video_url')
-      .single();
+      .maybeSingle();
 
-    if (error || !data) {
+    if (error) {
       console.error('[exercises/media] db update error:', error);
+      try {
+        await deleteR2Object(storageUrl, bucket);
+      } catch (cleanupError) {
+        console.error('[exercises/media] rollback upload error:', cleanupError);
+      }
       return NextResponse.json(
         { error: 'Arquivo enviado ao R2, mas falhou ao salvar no banco' },
         { status: 500 }
       );
+    }
+    if (!data) {
+      console.error('[exercises/media] db update matched 0 rows:', { exerciseId, kind });
+      try {
+        await deleteR2Object(storageUrl, bucket);
+      } catch (cleanupError) {
+        console.error('[exercises/media] rollback upload error:', cleanupError);
+      }
+      return NextResponse.json(
+        {
+          error:
+            'Não foi possível salvar a mídia no banco. Reinicie o servidor dev e confirme SUPABASE_SERVICE_ROLE_KEY no .env.local.',
+        },
+        { status: 500 }
+      );
+    }
+
+    if (
+      previousStorageUrl &&
+      previousStorageUrl !== storageUrl &&
+      parseR2StorageUrl(previousStorageUrl)?.key !== key
+    ) {
+      try {
+        await deleteR2Object(previousStorageUrl, bucket);
+      } catch (deleteError) {
+        console.error('[exercises/media] delete previous object error:', deleteError);
+      }
     }
 
     return NextResponse.json({
@@ -190,11 +229,12 @@ export async function DELETE(
   }
   const kind = kindRaw as MediaKind;
 
+  const supabaseAdmin = getSupabaseAdmin();
+
   const { data: existing, error: fetchError } = await supabaseAdmin
     .from('exercises')
-    .select('id, r2_photo_url, r2_video_url')
+    .select('id, created_by, r2_photo_url, r2_video_url')
     .eq('id', exerciseId)
-    .is('created_by', null)
     .maybeSingle();
 
   if (fetchError) {
@@ -203,6 +243,12 @@ export async function DELETE(
   }
   if (!existing) {
     return NextResponse.json({ error: 'Exercício não encontrado' }, { status: 404 });
+  }
+  if (existing.created_by != null) {
+    return NextResponse.json(
+      { error: 'Apenas exercícios do sistema podem ser editados pelo backoffice' },
+      { status: 403 }
+    );
   }
 
   const storageUrl = kind === 'photo' ? existing.r2_photo_url : existing.r2_video_url;
@@ -222,12 +268,15 @@ export async function DELETE(
       updated_at: new Date().toISOString(),
     })
     .eq('id', exerciseId)
-    .is('created_by', null)
     .select('id, r2_photo_url, r2_video_url')
-    .single();
+    .maybeSingle();
 
-  if (error || !data) {
+  if (error) {
     console.error('[exercises/media] db clear error:', error);
+    return NextResponse.json({ error: 'Erro ao remover mídia do banco' }, { status: 500 });
+  }
+  if (!data) {
+    console.error('[exercises/media] db clear matched 0 rows:', { exerciseId, kind });
     return NextResponse.json({ error: 'Erro ao remover mídia do banco' }, { status: 500 });
   }
 

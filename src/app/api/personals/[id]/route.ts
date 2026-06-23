@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getSupabaseAdmin } from '@/lib/supabase/client';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { requireAdmin, TRAINER_PROFILE_ROLES } from '@/lib/personals';
 
 const updateSchema = z.object({
