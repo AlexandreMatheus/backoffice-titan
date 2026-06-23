@@ -5,6 +5,7 @@ import { extractTokenFromHeader, verifyAccessToken } from '@/lib/auth/jwt';
 import {
   buildR2StorageUrl,
   buildUniqueExerciseR2Key,
+  isExerciseR2KeyForKind,
   parseR2StorageUrl,
 } from '@/lib/exercise-r2-media';
 import {
@@ -42,6 +43,96 @@ function getR2Client() {
   });
 }
 
+async function registerUploadedMedia(params: {
+  exerciseId: string;
+  kind: MediaKind;
+  storageUrl: string;
+  bucket: string;
+}) {
+  const { exerciseId, kind, storageUrl, bucket } = params;
+  const parsed = parseR2StorageUrl(storageUrl);
+  if (!parsed || parsed.bucket !== bucket) {
+    return NextResponse.json({ error: 'storageUrl inválida para este bucket' }, { status: 400 });
+  }
+  if (!isExerciseR2KeyForKind(exerciseId, kind, parsed.key)) {
+    console.warn('[exercises/media] register key mismatch', {
+      exerciseId,
+      kind,
+      key: parsed.key,
+    });
+    return NextResponse.json({ error: 'Chave R2 não corresponde ao exercício/kind' }, { status: 400 });
+  }
+
+  const supabaseAdmin = getSupabaseAdmin();
+  const { data: existing, error: fetchError } = await supabaseAdmin
+    .from('exercises')
+    .select('id, created_by, r2_photo_url, r2_video_url')
+    .eq('id', exerciseId)
+    .maybeSingle();
+
+  if (fetchError) {
+    console.error('[exercises/media] register fetch error:', fetchError);
+    return NextResponse.json({ error: 'Erro ao buscar exercício' }, { status: 500 });
+  }
+  if (!existing) {
+    return NextResponse.json({ error: 'Exercício não encontrado' }, { status: 404 });
+  }
+  if (existing.created_by != null) {
+    return NextResponse.json(
+      { error: 'Apenas exercícios do sistema podem ser editados pelo backoffice' },
+      { status: 403 }
+    );
+  }
+
+  const previousStorageUrl =
+    kind === 'photo' ? existing.r2_photo_url : existing.r2_video_url;
+  const field = kind === 'photo' ? 'r2_photo_url' : 'r2_video_url';
+
+  const { data, error } = await supabaseAdmin
+    .from('exercises')
+    .update({
+      [field]: storageUrl,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', exerciseId)
+    .select('id, r2_photo_url, r2_video_url')
+    .maybeSingle();
+
+  if (error) {
+    console.error('[exercises/media] register db update error:', error);
+    return NextResponse.json({ error: 'Erro ao salvar mídia no banco' }, { status: 500 });
+  }
+  if (!data) {
+    console.error('[exercises/media] register db update matched 0 rows:', { exerciseId, kind });
+    return NextResponse.json({ error: 'Erro ao salvar mídia no banco' }, { status: 500 });
+  }
+
+  if (
+    previousStorageUrl &&
+    previousStorageUrl !== storageUrl &&
+    parseR2StorageUrl(previousStorageUrl)?.key !== parsed.key
+  ) {
+    try {
+      await deleteR2Object(previousStorageUrl, bucket);
+      console.info('[exercises/media] deleted previous object', {
+        exerciseId,
+        kind,
+        previousStorageUrl,
+      });
+    } catch (deleteError) {
+      console.error('[exercises/media] delete previous object error:', deleteError);
+    }
+  }
+
+  console.info('[exercises/media] register success', { exerciseId, kind, storageUrl });
+  return NextResponse.json({
+    success: true,
+    kind,
+    storageUrl,
+    exercise: data,
+  });
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -62,6 +153,35 @@ export async function POST(
   }
 
   const { id: exerciseId } = await params;
+  const requestContentType = request.headers.get('content-type') || '';
+
+  if (requestContentType.includes('application/json')) {
+    const body = (await request.json().catch(() => ({}))) as {
+      kind?: string;
+      storageUrl?: string;
+      key?: string;
+    };
+    console.info('[exercises/media] POST register', {
+      exerciseId,
+      kind: body.kind,
+      key: body.key,
+      hasStorageUrl: !!body.storageUrl,
+    });
+    if (body.kind !== 'photo' && body.kind !== 'video') {
+      return NextResponse.json({ error: 'kind must be photo or video' }, { status: 400 });
+    }
+    const storageUrl = (body.storageUrl || '').trim();
+    if (!storageUrl) {
+      return NextResponse.json({ error: 'storageUrl is required' }, { status: 400 });
+    }
+    return registerUploadedMedia({
+      exerciseId,
+      kind: body.kind,
+      storageUrl,
+      bucket,
+    });
+  }
+
   const formData = await request.formData();
   const kindRaw = formData.get('kind');
   const file = formData.get('file');
@@ -73,6 +193,30 @@ export async function POST(
 
   if (!(file instanceof File) || file.size === 0) {
     return NextResponse.json({ error: 'Arquivo de mídia inválido' }, { status: 400 });
+  }
+
+  console.info('[exercises/media] POST multipart', {
+    exerciseId,
+    kind,
+    bytes: file.size,
+    mime: file.type,
+  });
+
+  const MULTIPART_MAX_BYTES = 20 * 1024 * 1024;
+  if (file.size > MULTIPART_MAX_BYTES) {
+    console.warn('[exercises/media] multipart too large', {
+      exerciseId,
+      kind,
+      bytes: file.size,
+      maxBytes: MULTIPART_MAX_BYTES,
+    });
+    return NextResponse.json(
+      {
+        error:
+          'Arquivo grande demais para envio direto. Recarregue a página e tente novamente (upload usa R2 direto).',
+      },
+      { status: 413 }
+    );
   }
 
   const contentType = resolveMediaContentType(file, kind);
@@ -229,6 +373,8 @@ export async function DELETE(
   }
   const kind = kindRaw as MediaKind;
 
+  console.info('[exercises/media] DELETE', { exerciseId, kind });
+
   const supabaseAdmin = getSupabaseAdmin();
 
   const { data: existing, error: fetchError } = await supabaseAdmin
@@ -280,5 +426,6 @@ export async function DELETE(
     return NextResponse.json({ error: 'Erro ao remover mídia do banco' }, { status: 500 });
   }
 
+  console.info('[exercises/media] DELETE success', { exerciseId, kind });
   return NextResponse.json({ success: true, kind, exercise: data });
 }

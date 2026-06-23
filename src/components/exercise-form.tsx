@@ -7,6 +7,13 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { DialogFooter } from '@/components/ui/dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Combobox } from '@/components/ui/combobox';
 import { ComboboxSingle } from '@/components/ui/combobox-single';
 import { CustomBodySvg } from '@/components/CustomBodySvg';
@@ -20,6 +27,8 @@ import {
   VIDEO_INPUT_ACCEPT,
   validateMediaFile,
 } from '@/lib/media-validation';
+import { uploadExerciseMediaViaPresigned } from '@/lib/upload-exercise-media-client';
+import { MediaUploadOverlay } from '@/components/media-upload-overlay';
 
 export interface Exercise {
   id: string;
@@ -186,6 +195,9 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
   const [isUploadingVideo, setIsUploadingVideo] = useState(false);
   const [isDeletingPhoto, setIsDeletingPhoto] = useState(false);
   const [isDeletingVideo, setIsDeletingVideo] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [deleteConfirmKind, setDeleteConfirmKind] = useState<'photo' | 'video' | null>(null);
+  const uploadAbortRef = useRef<AbortController | null>(null);
   const [cropEditor, setCropEditor] = useState<{ src: string; ownedBlob?: boolean } | null>(null);
   const { resolvedUrl: resolvedPhotoUrl } = useR2Photo(mediaUrls.r2_photo_url);
 
@@ -250,36 +262,28 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
       const previewKey = kind === 'photo' ? 'photo' : 'video';
       const previewUrl = URL.createObjectURL(file);
 
+      uploadAbortRef.current?.abort();
+      const abortController = new AbortController();
+      uploadAbortRef.current = abortController;
+
       setUploading(true);
+      setUploadProgress(0);
       setLocalPreview((prev) => ({ ...prev, [previewKey]: previewUrl }));
 
       try {
-        const body = new FormData();
-        body.append('kind', kind);
-        body.append('file', file);
-
-        const res = await fetch(`/api/exercises/${exercise.id}/media`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body,
+        const result = await uploadExerciseMediaViaPresigned({
+          exerciseId: exercise.id,
+          file,
+          kind,
+          accessToken: accessToken ?? '',
+          onProgress: setUploadProgress,
+          signal: abortController.signal,
         });
-
-        const data = (await res.json().catch(() => ({}))) as {
-          error?: string;
-          exercise?: { r2_photo_url?: string | null; r2_video_url?: string | null };
-          storageUrl?: string;
-        };
-
-        if (!res.ok) {
-          throw new Error(data.error ?? 'Erro ao enviar mídia');
-        }
 
         const field = kind === 'photo' ? 'r2_photo_url' : 'r2_video_url';
         const storageUrl =
-          data.storageUrl ??
-          data.exercise?.[field] ??
+          result.storageUrl ??
+          result.exercise?.[field] ??
           null;
 
         if (!storageUrl) {
@@ -292,19 +296,33 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
           kind === 'photo' ? 'Foto enviada e salva!' : 'Vídeo enviado e salvo!'
         );
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : 'Erro ao enviar mídia');
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          toast.message('Envio cancelado');
+        } else {
+          const message = err instanceof Error ? err.message : 'Erro ao enviar mídia';
+          console.error('[ExerciseForm] upload error', { kind, message });
+          toast.error(message);
+        }
       } finally {
+        if (uploadAbortRef.current === abortController) {
+          uploadAbortRef.current = null;
+        }
         URL.revokeObjectURL(previewUrl);
         setLocalPreview((prev) => {
           const next = { ...prev };
           delete next[previewKey];
           return next;
         });
+        setUploadProgress(0);
         setUploading(false);
       }
     },
     [accessToken, exercise?.id, onMediaUpdated]
   );
+
+  const cancelUpload = useCallback(() => {
+    uploadAbortRef.current?.abort();
+  }, []);
 
   const deleteMedia = useCallback(
     async (kind: 'photo' | 'video') => {
@@ -314,12 +332,9 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
       }
 
       const label = kind === 'photo' ? 'foto' : 'vídeo';
-      if (!confirm(`Excluir a ${label} deste exercício?`)) {
-        return;
-      }
-
       const setDeleting = kind === 'photo' ? setIsDeletingPhoto : setIsDeletingVideo;
       setDeleting(true);
+      console.info('[ExerciseForm] delete media', { exerciseId: exercise.id, kind });
       try {
         const res = await fetch(`/api/exercises/${exercise.id}/media?kind=${kind}`, {
           method: 'DELETE',
@@ -327,6 +342,7 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
         });
         const data = (await res.json().catch(() => ({}))) as { error?: string };
         if (!res.ok) {
+          console.error('[ExerciseForm] delete failed', { status: res.status, error: data.error });
           throw new Error(data.error ?? `Erro ao excluir ${label}`);
         }
         const field = kind === 'photo' ? 'r2_photo_url' : 'r2_video_url';
@@ -337,6 +353,7 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
         toast.error(err instanceof Error ? err.message : `Erro ao excluir ${label}`);
       } finally {
         setDeleting(false);
+        setDeleteConfirmKind(null);
       }
     },
     [accessToken, exercise?.id, onMediaUpdated]
@@ -751,10 +768,11 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
                         alt="Enviando foto"
                         className="h-full w-full object-cover opacity-70"
                       />
-                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/40">
-                        <Loader2 className="h-6 w-6 animate-spin text-white" />
-                        <p className="text-xs text-white/90">Enviando foto...</p>
-                      </div>
+                      <MediaUploadOverlay
+                        label="Enviando foto..."
+                        progress={uploadProgress}
+                        onCancel={cancelUpload}
+                      />
                     </>
                   ) : mediaUrls.r2_photo_url ? (
                     <ExercisePhoto
@@ -803,7 +821,7 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
                       type="button"
                       size="sm"
                       variant="destructive"
-                      onClick={() => void deleteMedia('photo')}
+                      onClick={() => setDeleteConfirmKind('photo')}
                       disabled={isUploadingPhoto || isDeletingPhoto}
                     >
                       {isDeletingPhoto ? (
@@ -825,10 +843,11 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
                         src={localPreview.video}
                         className="h-full w-full object-cover opacity-70"
                       />
-                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/40">
-                        <Loader2 className="h-6 w-6 animate-spin text-white" />
-                        <p className="text-xs text-white/90">Enviando vídeo...</p>
-                      </div>
+                      <MediaUploadOverlay
+                        label="Enviando vídeo..."
+                        progress={uploadProgress}
+                        onCancel={cancelUpload}
+                      />
                     </>
                   ) : mediaUrls.r2_video_url ? (
                     <MediaVideoPreview r2VideoUrl={mediaUrls.r2_video_url} />
@@ -861,7 +880,7 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
                       type="button"
                       size="sm"
                       variant="destructive"
-                      onClick={() => void deleteMedia('video')}
+                      onClick={() => setDeleteConfirmKind('video')}
                       disabled={isUploadingVideo || isDeletingVideo}
                     >
                       {isDeletingVideo ? (
@@ -920,6 +939,48 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
               onConfirm={handleCropConfirm}
               onCancel={handleCropCancel}
             />
+
+            <Dialog
+              open={deleteConfirmKind != null}
+              onOpenChange={(open) => {
+                if (!open) setDeleteConfirmKind(null);
+              }}
+            >
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>
+                    Excluir {deleteConfirmKind === 'photo' ? 'foto' : 'vídeo'}?
+                  </DialogTitle>
+                  <DialogDescription>
+                    Esta ação remove o arquivo do armazenamento e a referência no exercício.
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setDeleteConfirmKind(null)}
+                    disabled={isDeletingPhoto || isDeletingVideo}
+                  >
+                    Cancelar
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    onClick={() => {
+                      if (deleteConfirmKind) void deleteMedia(deleteConfirmKind);
+                    }}
+                    disabled={isDeletingPhoto || isDeletingVideo}
+                  >
+                    {(deleteConfirmKind === 'photo' && isDeletingPhoto) ||
+                    (deleteConfirmKind === 'video' && isDeletingVideo) ? (
+                      <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                    ) : null}
+                    Excluir
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
           </div>
         )}
       </form>

@@ -21,3 +21,13 @@ export function buildUniqueExerciseR2Key(
   const suffix = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   return `exercises/${exerciseId}/r2/${kind}-${suffix}.${normalizedExt}`;
 }
+
+/** Aceita chaves legadas (`video.mp4`) e novas (`video-{ts}-{rand}.mp4`). */
+export function isExerciseR2KeyForKind(
+  exerciseId: string,
+  kind: MediaKind,
+  key: string
+): boolean {
+  const prefix = `exercises/${exerciseId}/r2/${kind}`;
+  return key === prefix || key.startsWith(`${prefix}-`) || key.startsWith(`${prefix}.`);
+}

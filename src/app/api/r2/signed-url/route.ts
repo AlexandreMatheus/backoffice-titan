@@ -84,6 +84,7 @@ export async function POST(request: NextRequest) {
         ...(contentType ? { ContentType: contentType } : {}),
       });
       const url = await getSignedUrl(client, command, { expiresIn });
+      console.info('[r2/signed-url] upload url generated', { exerciseId, kind, key });
       return NextResponse.json({
         url,
         key,
