@@ -11,6 +11,7 @@ export type ShelfCategory = 'inferiores' | 'puxar' | 'empurrar' | 'cardio'
 
 export interface ExerciseForShelf {
   id: string
+  reference_code?: string | null
   name: string
   execution_type?: string | null
   prateleira?: string | null

@@ -29,9 +29,11 @@ import {
 } from '@/lib/media-validation';
 import { uploadExerciseMediaViaPresigned } from '@/lib/upload-exercise-media-client';
 import { MediaUploadOverlay } from '@/components/media-upload-overlay';
+import { ExerciseReferenceCode } from '@/components/exercise-reference-code';
 
 export interface Exercise {
   id: string;
+  reference_code?: string | null;
   name: string;
   subnome?: string;
   level?: string;
@@ -494,6 +496,12 @@ export function ExerciseForm({ exercise, onSaved, onCancel, onMediaUpdated }: Ex
           <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
             {/* Left column — main fields */}
             <div className="xl:col-span-3 space-y-3">
+              {exercise?.reference_code ? (
+                <div className="space-y-2">
+                  <Label>Código de referência</Label>
+                  <ExerciseReferenceCode code={exercise.reference_code} size="md" />
+                </div>
+              ) : null}
               <div className="space-y-2">
                 <Label htmlFor="name">Nome *</Label>
                 <Input

@@ -15,6 +15,7 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog';
 import { ExerciseForm, type Exercise } from '@/components/exercise-form';
+import { ExerciseReferenceCode } from '@/components/exercise-reference-code';
 import { useAuth } from '@/contexts/auth-context';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
@@ -51,6 +52,7 @@ function matchesExerciseSearch(exercise: Exercise, query: string): boolean {
   if (!q) return true;
   return (
     exercise.name.toLowerCase().includes(q) ||
+    (exercise.reference_code?.toLowerCase().includes(q) ?? false) ||
     (exercise.execution_type?.toLowerCase().includes(q) ?? false) ||
     (exercise.subnome?.toLowerCase().includes(q) ?? false)
   );
@@ -288,6 +290,9 @@ export function ExerciseTable() {
 
         <div className="p-2.5">
           <span className="text-xs font-semibold line-clamp-2 text-foreground block">{exercise.name}</span>
+          {exercise.reference_code ? (
+            <ExerciseReferenceCode code={exercise.reference_code} className="mt-1.5" />
+          ) : null}
           {exercise.subnome ? (
             <span className="text-[11px] line-clamp-1 text-muted-foreground block">{exercise.subnome}</span>
           ) : null}
@@ -541,6 +546,7 @@ export function ExerciseTable() {
             <thead>
               <tr className="border-b bg-muted/50">
                 <th className="px-4 py-3 text-left font-medium">Foto</th>
+                <th className="px-4 py-3 text-left font-medium">Código</th>
                 <th className="px-4 py-3 text-left font-medium">Nome</th>
                 <th className="px-4 py-3 text-left font-medium">Prateleira</th>
                 <th className="px-4 py-3 text-left font-medium">Grupo Muscular</th>
@@ -552,13 +558,13 @@ export function ExerciseTable() {
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center">
+                  <td colSpan={8} className="py-12 text-center">
                     <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
                   </td>
                 </tr>
               ) : paginatedList.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-muted-foreground">
+                  <td colSpan={8} className="py-12 text-center text-muted-foreground">
                     Nenhum exercício encontrado
                   </td>
                 </tr>
@@ -573,6 +579,9 @@ export function ExerciseTable() {
                           className="h-10 w-10 rounded-md"
                         />
                       </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <ExerciseReferenceCode code={exercise.reference_code} />
                     </td>
                     <td className="px-4 py-3">
                       <div>
