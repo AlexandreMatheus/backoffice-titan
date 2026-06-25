@@ -15,6 +15,13 @@ import {
   resolveMediaContentType,
   type MediaKind,
 } from '@/lib/media-validation';
+import {
+  EXERCISE_MEDIA_MAX_UPLOAD_BYTES,
+  EXERCISE_MEDIA_MAX_UPLOAD_LABEL,
+} from '@/lib/exercise-media-upload-limits';
+
+/** Uploads grandes (vídeos) podem levar vários minutos. */
+export const maxDuration = 300;
 
 async function deleteR2Object(storageUrl: string, expectedBucket: string) {
   const parsed = parseR2StorageUrl(storageUrl);
@@ -202,7 +209,7 @@ export async function POST(
     mime: file.type,
   });
 
-  const MULTIPART_MAX_BYTES = 20 * 1024 * 1024;
+  const MULTIPART_MAX_BYTES = EXERCISE_MEDIA_MAX_UPLOAD_BYTES;
   if (file.size > MULTIPART_MAX_BYTES) {
     console.warn('[exercises/media] multipart too large', {
       exerciseId,
@@ -213,7 +220,8 @@ export async function POST(
     return NextResponse.json(
       {
         error:
-          'Arquivo grande demais para envio direto. Recarregue a página e tente novamente (upload usa R2 direto).',
+          `Arquivo grande demais (máx. ${EXERCISE_MEDIA_MAX_UPLOAD_LABEL}). ` +
+          'Para arquivos maiores, configure CORS no bucket R2 para upload direto.',
       },
       { status: 413 }
     );
